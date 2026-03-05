@@ -182,9 +182,7 @@ services:
   ###
 
   vrp_server:
-    build:
-      context: ./vrp_server
-      dockerfile: Dockerfile
+    image: journeykmutt/vrp_server:latest
     ports:
       - "18080:18080"
     environment:
@@ -201,9 +199,7 @@ services:
     restart: unless-stopped
 
   fleet_gateway:
-    build:
-      context: ./fleet_gateway
-      dockerfile: Dockerfile
+    image: journeykmutt/fleet_gateway:latest
     ports:
       - "8080:8000"
     environment:
