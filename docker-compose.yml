@@ -34,7 +34,7 @@ services:
       - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
       # WCS warehouse graph (pgRouting must be enabled first — runs after image's 00-extension.sql creates the extensions schema)
       - ./volumes/db/init/00-extensions.sql:/docker-entrypoint-initdb.d/migrations/01-pgrouting.sql:ro
-      # - ./vrp_server/db/graph/merged.sql:/docker-entrypoint-initdb.d/migrations/98-graph.sql:ro
+      - ./db_schema/graph.sql:/docker-entrypoint-initdb.d/migrations/98-graph.sql:ro
     restart: unless-stopped
 
   rest:
@@ -198,7 +198,7 @@ services:
     restart: unless-stopped
 
   fleet_gateway:
-    image: wcs-fleet_gateway:local
+    image: journeykmutt/fleet_gateway:latest
     ports:
       - "8080:8000"
     environment:
