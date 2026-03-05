@@ -84,27 +84,6 @@ wcs/
 ├── docker-compose.yml          # Unified stack
 ├── .env.example                # Environment variable template
 │
-├── fleet_gateway/              # Python · FastAPI · Strawberry GraphQL
-│   ├── main.py
-│   ├── fleet_gateway/
-│   │   ├── api/                # GraphQL schema + types
-│   │   ├── warehouse_controller.py
-│   │   ├── fleet_handler.py
-│   │   ├── robot.py            # ROS integration via roslibpy
-│   │   ├── route_oracle.py     # Supabase path planning
-│   │   └── order_store.py      # Redis persistence
-│   └── README.md               # GraphQL API reference
-│
-├── vrp_server/                 # C++17 · Crow · OR-Tools
-│   ├── src/vrp_server.cpp
-│   ├── include/
-│   │   ├── vrp_solver.hpp      # OR-Tools VRP solver
-│   │   └── db_connector.hpp    # PostgreSQL queries
-│   ├── db/graph/               # Warehouse graph SQL schema
-│   │   ├── merged.sql          # Deploy this — all-in-one
-│   │   └── README.md           # Graph API reference
-│   └── README.md               # VRP API reference
-│
 ├── supabase/
 │   └── config.toml             # Supabase CLI config (local dev)
 │
