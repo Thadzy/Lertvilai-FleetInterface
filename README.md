@@ -99,12 +99,6 @@ wcs/
     └── functions/              # Studio Edge Function stubs
 ```
 
-## Service Documentation
-
-- **Fleet Gateway** — [`fleet_gateway/README.md`](fleet_gateway/README.md): GraphQL schema, mutations, queries, robot configuration
-- **VRP Server** — [`vrp_server/README.md`](vrp_server/README.md): `/solve` API, request format, constraints
-- **Warehouse Graph** — [`vrp_server/db/graph/README.md`](vrp_server/db/graph/README.md): SQL schema, pgRouting functions, graph management
-
 ## Environment Variables
 
 See [`.env.example`](.env.example) for the full list with descriptions.
