@@ -141,15 +141,4 @@ Key variables:
 | `PG_META_CRYPTO_KEY` | postgres-meta encryption key (32+ chars) |
 | `GRAPH_ID` | Warehouse graph ID used by Fleet Gateway |
 | `ROBOTS_CONFIG` | JSON map of robot name → `{host, port, cell_heights}` |
-
-## Individual Service Development
-
-Each service can be run in isolation with its own `docker-compose.yml`:
-
-```bash
-# Fleet Gateway + Redis only
-cd fleet_gateway && docker compose up --build
-
-# VRP Server + Postgres only
-cd vrp_server && docker compose up --build
 ```
