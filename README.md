@@ -55,40 +55,18 @@ A distributed system for managing autonomous mobile robot (AMR) fleets in a ware
 ### 1. Configure environment
 
 ```bash
-cp .env.example .env
+./env_init.sh
 ```
 
-Edit `.env` and fill in the required values:
+This generates `.env` with secure random secrets. Edit it afterwards to set `ROBOTS_CONFIG` (JSON map of robot names to connection config — see Fleet Gateway docs).
 
-- `POSTGRES_PASSWORD` — choose a strong password
-- `JWT_SECRET` — random string, minimum 32 characters
-- `ANON_KEY` / `SERVICE_ROLE_KEY` — generate from your JWT secret:
-  ```
-  npx supabase@latest gen keys --project-ref local
-  ```
-  or use the [Supabase key generator](https://supabase.com/docs/guides/self-hosting/docker#generate-api-keys)
-- `PG_META_CRYPTO_KEY` — random string, minimum 32 characters
-- `ROBOTS_CONFIG` — JSON map of robot names to connection config (see Fleet Gateway docs)
-
-### 2. Apply the warehouse graph schema
-
-The graph schema (pgRouting tables and functions) must be loaded into the database once:
+### 2. Start all services
 
 ```bash
-# After the db container is running:
-docker compose up db -d
-docker compose exec db psql -U postgres -f /dev/stdin < vrp_server/db/graph/merged.sql
+docker compose up -d
 ```
 
-Or apply it via Supabase Studio (port 54323) → SQL Editor.
-
-### 3. Start all services
-
-```bash
-docker compose up --build
-```
-
-### 4. Access
+### 3. Access
 
 | Interface | URL |
 |---|---|
