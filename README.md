@@ -114,4 +114,3 @@ Key variables:
 | `PG_META_CRYPTO_KEY` | postgres-meta encryption key (32+ chars) |
 | `GRAPH_ID` | Warehouse graph ID used by Fleet Gateway |
 | `ROBOTS_CONFIG` | JSON map of robot name → `{host, port, cell_heights}` |
-```
