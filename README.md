@@ -58,7 +58,9 @@ A distributed system for managing autonomous mobile robot (AMR) fleets in a ware
 ./env_init.sh
 ```
 
-This generates `.env` with secure random secrets. Edit it afterwards to set `ROBOTS_CONFIG` (JSON map of robot names to connection config — see Fleet Gateway docs).
+This generates `.env` with secure random secrets. The script interactively prompts for:
+- **Robot type** — `SIMBOT` (simulator), `FACOBOT` (external), or `LOCALBOT` (host machine)
+- **GraphQL IDE** — `graphiql` (default), `apollo-sandbox`, or `graphql-playground`
 
 ### 2. Start all services
 
@@ -114,3 +116,4 @@ Key variables:
 | `PG_META_CRYPTO_KEY` | postgres-meta encryption key (32+ chars) |
 | `GRAPH_ID` | Warehouse graph ID used by Fleet Gateway |
 | `ROBOTS_CONFIG` | JSON map of robot name → `{host, port, cell_heights}` |
+| `GRAPHQL_IDE` | GraphQL IDE at `GET /graphql` — `graphiql`, `apollo-sandbox`, or `graphql-playground` |

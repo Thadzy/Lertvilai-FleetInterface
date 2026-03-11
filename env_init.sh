@@ -87,6 +87,20 @@ case "$robot_choice" in
     ;;
 esac
 
+# GraphQL IDE selection
+echo ""
+echo "Select GraphQL IDE:"
+echo "  1) GraphiQL        (default)"
+echo "  2) Apollo Sandbox"
+echo "  3) GraphQL Playground"
+read -rp "Enter choice [1/2/3]: " ide_choice
+
+case "$ide_choice" in
+  2) replace_env GRAPHQL_IDE "apollo-sandbox" ;;
+  3) replace_env GRAPHQL_IDE "graphql-playground" ;;
+  *)  replace_env GRAPHQL_IDE "graphiql" ;;
+esac
+
 rm -f .env.bak
 
 echo ".env created with generated secrets."

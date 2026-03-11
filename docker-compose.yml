@@ -210,6 +210,7 @@ services:
       GRAPH_ID: ${GRAPH_ID:-1}
       ROBOTS_CONFIG: ${ROBOTS_CONFIG:-{}}
       VRP_SERVER_URL: http://vrp_server:18080
+      GRAPHQL_IDE: ${GRAPHQL_IDE:-graphiql}
     depends_on:
       redis:
         condition: service_healthy
