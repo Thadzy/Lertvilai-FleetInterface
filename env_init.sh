@@ -60,6 +60,35 @@ replace_env SERVICE_ROLE_KEY    "$SERVICE_ROLE_KEY"
 
 rm -f .env.bak
 
+# Robot type selection
+echo "Select robot type:"
+echo "  1) SIMBOT    (simulator, default)"
+echo "  2) FACOBOT   (external robot)"
+echo "  3) LOCALBOT  (local robot via host.docker.internal)"
+read -rp "Enter choice [1/2/3]: " robot_choice
+
+case "$robot_choice" in
+  2)
+    read -rp "Enter FACOBOT host IP [10.61.6.65]: " facobot_host
+    facobot_host="${facobot_host:-10.61.6.65}"
+    ROBOTS_CONFIG="{\"FACOBOT\": {\"host\": \"${facobot_host}\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
+    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
+    sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
+    echo "Robot: FACOBOT (${facobot_host}) — robot_simulator commented out in docker-compose.yml"
+    ;;
+  3)
+    ROBOTS_CONFIG='{"LOCALBOT": {"host": "host.docker.internal", "port": 9090, "cell_heights": [0.653, 1.073, 1.493, 1.913]}}'
+    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
+    sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
+    echo "Robot: LOCALBOT (host.docker.internal) — robot_simulator commented out in docker-compose.yml"
+    ;;
+  *)
+    ROBOTS_CONFIG='{"SIMBOT": {"host": "robot_simulator", "port": 9090, "cell_heights": [0.653, 1.073, 1.493, 1.913]}}'
+    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
+    echo "Robot: SIMBOT (simulator)"
+    ;;
+esac
+
 echo ".env created with generated secrets."
 echo
 echo "  POSTGRES_PASSWORD  : ${POSTGRES_PASSWORD}"
