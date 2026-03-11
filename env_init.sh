@@ -58,8 +58,6 @@ replace_env DASHBOARD_PASSWORD  "$DASHBOARD_PASSWORD"
 replace_env ANON_KEY            "$ANON_KEY"
 replace_env SERVICE_ROLE_KEY    "$SERVICE_ROLE_KEY"
 
-rm -f .env.bak
-
 # Robot type selection
 echo "Select robot type:"
 echo "  1) SIMBOT    (simulator, default)"
@@ -88,6 +86,8 @@ case "$robot_choice" in
     echo "Robot: SIMBOT (simulator)"
     ;;
 esac
+
+rm -f .env.bak
 
 echo ".env created with generated secrets."
 echo
