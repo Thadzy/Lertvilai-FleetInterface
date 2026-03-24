@@ -7,9 +7,10 @@ services:
   db:
     image: supabase/postgres:15.8.1.085
     # supabase/postgres bundles pgRouting and all other Supabase extensions
+
     command: postgres -c config_file=/etc/postgresql/postgresql.conf -c log_min_messages=fatal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -h localhost" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -50,6 +51,7 @@ services:
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+      PGRST_DB_EXTRA_SEARCH_PATH: extensions
     command: postgrest
     restart: unless-stopped
 
@@ -76,7 +78,7 @@ services:
       rest:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://storage:5000/status"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://storage:5000/status" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -96,8 +98,10 @@ services:
       ENABLE_IMAGE_TRANSFORMATION: "false"
       S3_PROTOCOL_ACCESS_KEY_ID: ${S3_PROTOCOL_ACCESS_KEY_ID:-}
       S3_PROTOCOL_ACCESS_KEY_SECRET: ${S3_PROTOCOL_ACCESS_KEY_SECRET:-}
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
+      TUS_STAGING_DIR: /tmp/tus-staging
     volumes:
-      - ./volumes/storage:/var/lib/storage
+      - storage_data:/var/lib/storage
     restart: unless-stopped
 
   studio:
@@ -106,7 +110,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/platform/profile').then(r => { if (!r.ok) throw new Error(r.status); })"]
+      test: [ "CMD", "node", "-e", "fetch('http://localhost:3000/api/platform/profile').then(r => { if (!r.ok) throw new Error(r.status); })" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -129,6 +133,7 @@ services:
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       AUTH_JWT_SECRET: ${JWT_SECRET}
       EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /app/edge-functions
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
     volumes:
       - ./volumes/snippets:/app/snippets
       - ./volumes/functions:/app/edge-functions
@@ -171,7 +176,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -191,7 +196,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:18080/health || exit 1"]
+      test: [ "CMD-SHELL", "curl -sf http://localhost:18080/health || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -199,27 +204,17 @@ services:
     restart: unless-stopped
 
   fleet_gateway:
-    image: journeykmutt/fleet_gateway:latest
+    build: ./fleet_gateway_custom
     ports:
       - "8080:8000"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_KEY: ${ANON_KEY}
-      GRAPH_ID: ${GRAPH_ID:-1}
       ROBOTS_CONFIG: ${ROBOTS_CONFIG:-{}}
-      VRP_SERVER_URL: http://vrp_server:18080
       GRAPHQL_IDE: ${GRAPHQL_IDE:-graphiql}
     depends_on:
       redis:
         condition: service_healthy
-      vrp_server:
-        condition: service_healthy
-      kong:
-        condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   # Uncomment robot simulator for real-world application
@@ -228,13 +223,23 @@ services:
     ports:
       - "9090:9090"
     command: >
-      ros2 launch robot_sim sim.launch.py
-      publish_rate:=10.0
-      radius:=5.0
-      speed:=0.5
-      port:=9090
+      ros2 launch robot_sim sim.launch.py publish_rate:=10.0 radius:=5.0 speed:=0.5 port:=9090
 
+  robot_bridge:
+    build: ./robot_bridge
+    environment:
+      ROBOT_NAME: SIMBOT
+      ROBOT_HOST: robot_simulator
+      ROBOT_PORT: "9090"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      HEARTBEAT_TTL: "10"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   db_data:
   redis_data:
+  storage_data:

@@ -1462,6 +1462,7 @@ CREATE OR REPLACE FUNCTION public.wh_astar_cost_matrix(
 RETURNS TABLE(start_vid bigint, end_vid bigint, agg_cost double precision)
 LANGUAGE plpgsql
 STABLE
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_invalid_nodes bigint[];
@@ -1504,6 +1505,7 @@ CREATE OR REPLACE FUNCTION public.wh_astar_cost_matrix(
 RETURNS TABLE(start_vid bigint, end_vid bigint, agg_cost double precision)
 LANGUAGE plpgsql
 STABLE
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_vids bigint[];
@@ -1566,6 +1568,7 @@ CREATE OR REPLACE FUNCTION public.wh_astar_shortest_path(
 RETURNS bigint[]
 LANGUAGE plpgsql
 STABLE
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_path bigint[];
@@ -1619,6 +1622,7 @@ CREATE OR REPLACE FUNCTION public.wh_astar_shortest_path(
 RETURNS bigint[]
 LANGUAGE plpgsql
 STABLE
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_start_id bigint;
@@ -1672,6 +1676,7 @@ CREATE OR REPLACE FUNCTION public.wh_build_pgrouting_edges_query_3d(
 RETURNS text
 LANGUAGE plpgsql
 IMMUTABLE
+SET search_path = public, extensions
 AS $$
 BEGIN
   RETURN format($q$
