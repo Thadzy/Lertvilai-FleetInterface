@@ -190,6 +190,8 @@ class TravelOrderInput:
     robot_name: str
     target_node_id: Optional[int] = None
     target_node_alias: Optional[str] = None
+    target_x: Optional[float] = None  # Metres — forwarded to robot for navigation
+    target_y: Optional[float] = None  # Metres — forwarded to robot for navigation
 
 
 # ── Redis helpers ─────────────────────────────────────────────────────────────
@@ -319,15 +321,114 @@ class Query:
 class Mutation:
     @strawberry.mutation
     async def send_pickup_order(self, order: PickupOrderInput) -> JobOrderResult:
-        return JobOrderResult(success=False, message="Not implemented in simulation mode")
+        """Dispatch a pickup order to the target robot via Redis pub/sub.
+
+        Publishes a JSON command to ``robot:{robot_name}:command`` so that
+        robot_bridge (or any subscriber) can forward it to the physical robot
+        over the rosbridge WebSocket.
+
+        Args:
+            order: Pickup order input containing robot name and target node.
+
+        Returns:
+            JobOrderResult indicating success or failure.
+        """
+        channel = f"robot:{order.robot_name}:command"
+        command = json.dumps({
+            "op": "pickup",
+            "topic": "/pickup_command",
+            "msg": {
+                "target_alias": order.target_node_alias,
+                "target_node_id": order.target_node_id,
+            },
+        })
+        try:
+            r = await get_redis()
+            await r.publish(channel, command)
+            return JobOrderResult(
+                success=True,
+                message=f"Pickup order dispatched to {order.robot_name}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JobOrderResult(
+                success=False,
+                message=f"Redis error dispatching pickup to {order.robot_name}: {exc}",
+            )
 
     @strawberry.mutation
     async def send_delivery_order(self, order: DeliveryOrderInput) -> JobOrderResult:
-        return JobOrderResult(success=False, message="Not implemented in simulation mode")
+        """Dispatch a delivery order to the target robot via Redis pub/sub.
+
+        Publishes a JSON command to ``robot:{robot_name}:command`` so that
+        robot_bridge (or any subscriber) can forward it to the physical robot
+        over the rosbridge WebSocket.
+
+        Args:
+            order: Delivery order input containing robot name, cell level, and target node.
+
+        Returns:
+            JobOrderResult indicating success or failure.
+        """
+        channel = f"robot:{order.robot_name}:command"
+        command = json.dumps({
+            "op": "delivery",
+            "topic": "/delivery_command",
+            "msg": {
+                "target_alias": order.target_node_alias,
+                "target_node_id": order.target_node_id,
+                "cell_level": order.cell_level,
+            },
+        })
+        try:
+            r = await get_redis()
+            await r.publish(channel, command)
+            return JobOrderResult(
+                success=True,
+                message=f"Delivery order dispatched to {order.robot_name}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JobOrderResult(
+                success=False,
+                message=f"Redis error dispatching delivery to {order.robot_name}: {exc}",
+            )
 
     @strawberry.mutation
     async def send_travel_order(self, order: TravelOrderInput) -> JobOrderResult:
-        return JobOrderResult(success=False, message="Not implemented in simulation mode")
+        """Dispatch a travel order to the target robot via Redis pub/sub.
+
+        Publishes a JSON command to ``robot:{robot_name}:command`` so that
+        robot_bridge (or any subscriber) can forward it to the physical robot
+        over the rosbridge WebSocket.
+
+        Args:
+            order: Travel order input containing robot name and target node.
+
+        Returns:
+            JobOrderResult indicating success or failure.
+        """
+        channel = f"robot:{order.robot_name}:command"
+        command = json.dumps({
+            "op": "travel",
+            "topic": "/travel_command",
+            "msg": {
+                "target_alias": order.target_node_alias,
+                "target_node_id": order.target_node_id,
+                "target_x": order.target_x,
+                "target_y": order.target_y,
+            },
+        })
+        try:
+            r = await get_redis()
+            await r.publish(channel, command)
+            return JobOrderResult(
+                success=True,
+                message=f"Travel order dispatched to {order.robot_name}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JobOrderResult(
+                success=False,
+                message=f"Redis error dispatching travel to {order.robot_name}: {exc}",
+            )
 
     @strawberry.mutation
     async def run_robot(self, robot_name: str) -> JobOrderResult:

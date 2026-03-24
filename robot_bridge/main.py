@@ -50,8 +50,90 @@ robot_state = {
 }
 
 
+async def _receive_topics(r: redis_async.Redis, ws):
+    """Read telemetry topics from rosbridge and push state to Redis."""
+    async for raw in ws:
+        msg = json.loads(raw)
+        topic = msg.get("topic")
+        data = msg.get("msg", {})
+
+        if topic == "/odom_qr":
+            pos = data.get("pose", {}).get("pose", {}).get("position", {})
+            twist = data.get("twist", {}).get("twist", {}).get("linear", {})
+            robot_state["mobileBaseState"]["x"] = round(pos.get("x", 0.0), 4)
+            robot_state["mobileBaseState"]["y"] = round(pos.get("y", 0.0), 4)
+            robot_state["mobileBaseState"]["theta"] = round(pos.get("z", 0.0), 4)
+            speed = (twist.get("x", 0.0) ** 2 + twist.get("y", 0.0) ** 2) ** 0.5
+            robot_state["mobileBaseState"]["speed"] = round(speed, 4)
+
+            if speed > 0.01:
+                robot_state["lastActionStatus"] = "RUNNING"
+            else:
+                robot_state["lastActionStatus"] = "IDLE"
+
+        elif topic == "/qr_id":
+            robot_state["mobileBaseState"]["qr_id"] = data.get("data")
+
+        elif topic == "/piggyback_state":
+            # sensor_msgs/JointState: names=[lift,turntable,slide,hook_left,hook_right]
+            names = data.get("name", [])
+            positions = data.get("position", [])
+            joint_map = dict(zip(names, positions))
+            if joint_map:
+                robot_state["piggybackState"] = {
+                    "lift":       joint_map.get("lift", 0.0),
+                    "turntable":  joint_map.get("turntable", 0.0),
+                    "slide":      joint_map.get("slide", 0.0),
+                    "hook_left":  joint_map.get("hook_left", 0.0),
+                    "hook_right": joint_map.get("hook_right", 0.0),
+                }
+            else:
+                robot_state["piggybackState"] = False
+
+        await push_to_redis(r)
+
+
+async def _command_relay(r: redis_async.Redis, ws):
+    """Subscribe to Redis command channel and forward travel orders to rosbridge."""
+    pubsub = r.pubsub()
+    channel = f"robot:{ROBOT_NAME}:command"
+    await pubsub.subscribe(channel)
+    log.info(f"Subscribed to Redis channel {channel}")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            try:
+                cmd = json.loads(message["data"])
+                if cmd.get("op") == "travel":
+                    m = cmd.get("msg", {})
+                    target_alias = m.get("target_alias", "")
+                    target_x     = m.get("target_x")
+                    target_y     = m.get("target_y")
+
+                    # msg.data is a JSON string so pose_publisher can parse x,y
+                    nav_data = json.dumps({
+                        "alias": target_alias,
+                        "x": target_x if target_x is not None else 0.0,
+                        "y": target_y if target_y is not None else 0.0,
+                    })
+                    ros_payload = {
+                        "op": "publish",
+                        "topic": "/travel_command",
+                        "msg": {"data": nav_data},
+                    }
+                    ros_payload_str = json.dumps(ros_payload)
+                    log.info(f"Sending to ROS2: {ros_payload_str}")
+                    await ws.send(ros_payload_str)
+            except Exception as e:
+                log.error(f"Command relay error processing message: {e}")
+    finally:
+        await pubsub.unsubscribe(channel)
+        await pubsub.aclose()
+
+
 async def subscribe_to_rosbridge(r: redis_async.Redis):
-    """Subscribe to robot_simulator topics via rosbridge WebSocket."""
+    """Connect to rosbridge, subscribe to topics, and relay Redis commands."""
     import websockets
 
     while True:
@@ -60,7 +142,22 @@ async def subscribe_to_rosbridge(r: redis_async.Redis):
             async with websockets.connect(ROSBRIDGE_URI, ping_interval=10, ping_timeout=5) as ws:
                 log.info("Connected to rosbridge!")
 
-                # Subscribe to all topics
+                # Unsubscribe from /piggyback_state before (re-)subscribing.
+                # rosbridge retains stale subscriptions across reconnects when
+                # the client ID is reused.  If we connect without unsubscribing
+                # first, rosbridge may deliver duplicate messages or use the
+                # wrong message type from a previous session, causing parse
+                # errors in the JointState handler.  Sending an explicit
+                # unsubscribe followed by a short pause clears any ghost
+                # subscription on the server side before we create a fresh one.
+                await ws.send(json.dumps({
+                    "op": "unsubscribe",
+                    "topic": "/piggyback_state",
+                }))
+                log.info("Unsubscribed from /piggyback_state (clearing any stale subscription)")
+                await asyncio.sleep(0.1)  # Give rosbridge time to process the unsubscribe
+
+                # Subscribe to all telemetry topics
                 for topic, msg_type in [
                     ("/odom_qr", "nav_msgs/msg/Odometry"),
                     ("/qr_id", "std_msgs/msg/String"),
@@ -74,47 +171,12 @@ async def subscribe_to_rosbridge(r: redis_async.Redis):
                     }))
                     log.info(f"Subscribed to {topic}")
 
-                async for raw in ws:
-                    msg = json.loads(raw)
-                    topic = msg.get("topic")
-                    data = msg.get("msg", {})
-
-                    if topic == "/odom_qr":
-                        pos = data.get("pose", {}).get("pose", {}).get("position", {})
-                        twist = data.get("twist", {}).get("twist", {}).get("linear", {})
-                        robot_state["mobileBaseState"]["x"] = round(pos.get("x", 0.0), 4)
-                        robot_state["mobileBaseState"]["y"] = round(pos.get("y", 0.0), 4)
-                        robot_state["mobileBaseState"]["theta"] = round(pos.get("z", 0.0), 4)
-                        speed = (twist.get("x", 0.0) ** 2 + twist.get("y", 0.0) ** 2) ** 0.5
-                        robot_state["mobileBaseState"]["speed"] = round(speed, 4)
-
-                        # Update action status based on speed
-                        if speed > 0.01:
-                            robot_state["lastActionStatus"] = "RUNNING"
-                        else:
-                            robot_state["lastActionStatus"] = "IDLE"
-
-                    elif topic == "/qr_id":
-                        robot_state["mobileBaseState"]["qr_id"] = data.get("data")
-
-                    elif topic == "/piggyback_state":
-                        # sensor_msgs/JointState: names=[lift,turntable,slide,hook_left,hook_right]
-                        names = data.get("name", [])
-                        positions = data.get("position", [])
-                        joint_map = dict(zip(names, positions))
-                        if joint_map:
-                            robot_state["piggybackState"] = {
-                                "lift":       joint_map.get("lift", 0.0),
-                                "turntable":  joint_map.get("turntable", 0.0),
-                                "slide":      joint_map.get("slide", 0.0),
-                                "hook_left":  joint_map.get("hook_left", 0.0),
-                                "hook_right": joint_map.get("hook_right", 0.0),
-                            }
-                        else:
-                            robot_state["piggybackState"] = False
-
-                    # Push state to Redis on every update
-                    await push_to_redis(r)
+                # Run telemetry receiver and command relay concurrently on this connection.
+                # If either raises (e.g. ws closes), asyncio.gather cancels the other.
+                await asyncio.gather(
+                    _receive_topics(r, ws),
+                    _command_relay(r, ws),
+                )
 
         except Exception as e:
             log.warning(f"rosbridge connection error: {e}. Retrying in 3s...")

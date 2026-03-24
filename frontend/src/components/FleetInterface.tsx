@@ -5,6 +5,8 @@ import GraphEditor from './GraphEditor';
 import Optimization from './Optimization';
 import FleetController from './FleetController';
 import ThemeToggle from './ThemeToggle';
+import { dispatchVehicleRoute, VEHICLE_ROBOT_MAP } from '../utils/fleetGateway';
+import { type DBNode } from '../types/database';
 
 
 const FleetInterface: React.FC = () => {
@@ -17,9 +19,28 @@ const FleetInterface: React.FC = () => {
   const [simulationRoutes, setSimulationRoutes] = useState<number[][] | null>(null);
 
   /** Called by Optimization when user clicks "Dispatch to Fleet" */
-  const handleDispatch = useCallback((routes: number[][]) => {
-    setSimulationRoutes(routes);
-    setActiveTab('fleet'); // Auto-switch to Fleet tab
+  const handleDispatch = useCallback((
+    expandedRoutes: number[][],
+    vrpWaypoints: number[][],
+    nodes: DBNode[],
+  ) => {
+    setSimulationRoutes(expandedRoutes);
+    setActiveTab('fleet');
+
+    // Fire-and-forget: send travel orders to each mapped robot via Fleet Gateway
+    expandedRoutes.forEach((_, vehicleIndex) => {
+      if (!(vehicleIndex in VEHICLE_ROBOT_MAP)) return;
+      const waypoints = vrpWaypoints[vehicleIndex] ?? [];
+      dispatchVehicleRoute(vehicleIndex, waypoints, nodes).then(result => {
+        console.log(
+          `[FleetInterface] Vehicle ${vehicleIndex + 1} dispatch complete:`,
+          `${result.dispatched} sent, ${result.skipped} skipped`,
+        );
+        result.log.forEach(entry => console.log(`  ${entry}`));
+      }).catch(err => {
+        console.error(`[FleetInterface] Vehicle ${vehicleIndex + 1} dispatch failed:`, err);
+      });
+    });
   }, []);
 
   // Basic validation

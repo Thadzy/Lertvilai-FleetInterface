@@ -178,7 +178,7 @@ mutation {
 
 ```graphql
 mutation {
-  sendTravelOrder(travelOrder: {
+  sendTravelOrder(order: {
     robotName: "LOCALBOT"
     targetNodeAlias: "Q119"
   }) {

@@ -52,6 +52,8 @@ services:
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
       PGRST_DB_EXTRA_SEARCH_PATH: extensions
+      PGRST_DB_POOL: "5"
+      PGRST_DB_POOL_TIMEOUT: "10"
     command: postgrest
     restart: unless-stopped
 
@@ -217,13 +219,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Uncomment robot simulator for real-world application
   robot_simulator:
-    image: journeykmutt/robot_simulator:latest
+    build: ./robot_simulator
     ports:
       - "9090:9090"
     command: >
-      ros2 launch robot_sim sim.launch.py publish_rate:=10.0 radius:=5.0 speed:=0.5 port:=9090
+      ros2 launch robot_sim sim.launch.py publish_rate:=10.0 nav_speed:=1.0 port:=9090
 
   robot_bridge:
     build: ./robot_bridge

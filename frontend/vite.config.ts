@@ -21,7 +21,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:18080',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/cpp-vrp/, ''),
-      }
+      },
+      '/api/fleet': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/fleet/, ''),
+      },
     }
   },
   // @ts-expect-error - vitest types are not automatically detected in some environments

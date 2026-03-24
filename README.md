@@ -306,7 +306,7 @@ query { requests { uuid status pickup { targetNode { alias } } delivery { target
 ```graphql
 # Move robot to a waypoint
 mutation {
-  sendTravelOrder(travelOrder: { robotName: "SIMBOT", targetNodeAlias: "Q10" }) {
+  sendTravelOrder(order: { robotName: "SIMBOT", targetNodeAlias: "Q10" }) {
     success message job { uuid status }
   }
 }

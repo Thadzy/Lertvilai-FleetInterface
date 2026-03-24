@@ -2,19 +2,29 @@ import { type DBNode } from '../types/database';
 
 /**
  * VRP API Client
- * Supports two backends:
- * 1. C++ VRP Server (Senior's) on port 18080 — preferred, handles cost matrix internally
- * 2. Python VRP Server on port 7779 — fallback, requires frontend to compute distance matrix
+ *
+ * Communicates exclusively with the C++ VRP server proxied via Vite at /api/cpp-vrp.
+ * The C++ server (Crow + OR-Tools, port 18080) handles cost-matrix computation
+ * internally using the warehouse graph stored in PostgreSQL.
+ *
+ * Python VRP fallback has been removed — all routing must go through the C++ server.
  */
 
+/** Proxy path to the C++ VRP server (configured in vite.config.ts → /api/cpp-vrp → :18080). */
 const CPP_VRP_URL = '/api/cpp-vrp';
-const PY_VRP_URL = '/api/vrp';
 
-// --- C++ Server Types ---
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 /**
- * Request payload for the VRP solver.
- * Contains the graph ID, vehicle count, and an array of pickup-delivery tasks.
+ * Request payload sent to the C++ VRP solver.
+ *
+ * @property graph_id           - ID of the warehouse graph in PostgreSQL.
+ * @property num_vehicles       - Number of robots available for assignment.
+ * @property pickups_deliveries - Array of pickup/delivery node ID pairs.
+ * @property robot_locations    - Optional array of starting node IDs per robot.
+ * @property vehicle_capacity   - Optional maximum number of tasks per robot.
  */
 export interface VrpRequest {
     graph_id: number;
@@ -24,37 +34,33 @@ export interface VrpRequest {
     vehicle_capacity?: number;
 }
 
+/** Raw response envelope returned by the C++ VRP server. */
 interface CppVrpResponse {
     status: 'success' | 'error';
     data?: { paths: number[][] };
     error?: { type: string; message: string };
 }
 
-// --- Python Server Types ---
-
-interface PyVrpRequest {
-    matrix: number[][];
-    requests: { pickup_index: number; delivery_index: number }[];
-    vehicle_count: number;
-    depot_index: number;
-}
-
-interface PyVrpResponse {
-    status: string;
-    total_distance?: number;
-    wall_time_ms?: number;
-    routes?: { vehicle_id: number; nodes: number[]; distance: number }[];
-    message?: string;
-    error?: string;
-}
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
 /**
- * Try the C++ VRP server first. Returns paths for each vehicle.
+ * Submit a VRP solve request to the C++ server and return per-vehicle node paths.
+ *
+ * Builds an `application/x-www-form-urlencoded` body as required by the Crow
+ * HTTP server and deserialises the JSON response.
+ *
+ * @param req - The VRP request parameters.
+ * @returns   A 2-D array where each inner array is the ordered node IDs for one vehicle.
+ * @throws    Error if the server returns an error status or an unexpected response shape.
  */
 async function solveCpp(req: VrpRequest): Promise<number[][]> {
     const formData = new URLSearchParams();
     formData.append('graph_id', String(req.graph_id));
     formData.append('num_vehicles', String(req.num_vehicles));
+
+    // Serialise pickups_deliveries as [[pickup, delivery], ...] array
     const pdArray = req.pickups_deliveries.map(pd => [pd.pickup, pd.delivery]);
     formData.append('pickups_deliveries', JSON.stringify(pdArray));
 
@@ -69,162 +75,76 @@ async function solveCpp(req: VrpRequest): Promise<number[][]> {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData,
+        // 30-second hard deadline — OR-Tools can be slow on large instances
         signal: AbortSignal.timeout(30000),
     });
+
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`C++ VRP server HTTP ${res.status}: ${text}`);
+    }
 
     const json: CppVrpResponse = await res.json();
 
     if (json.status === 'error' || !json.data) {
-        throw new Error(json.error?.message || 'C++ VRP solver error');
+        throw new Error(json.error?.message ?? 'C++ VRP solver returned an error with no message');
     }
 
     return json.data.paths;
 }
 
-/**
- * Fallback: Python VRP server. Needs a precomputed distance matrix.
- */
-async function solvePython(
-    matrix: number[][],
-    requests: { pickup_index: number; delivery_index: number }[],
-    numVehicles: number,
-    depotIndex: number
-): Promise<number[][]> {
-    const body: PyVrpRequest = {
-        matrix,
-        requests,
-        vehicle_count: numVehicles,
-        depot_index: depotIndex
-    };
-
-    const res = await fetch(`${PY_VRP_URL}/solve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30000),
-    });
-
-    if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[VRP] Python solver returned HTTP ${res.status}:`, errorText);
-        throw new Error(`Python solver error (${res.status}): ${errorText}`);
-    }
-
-    const json: PyVrpResponse = await res.json();
-
-    if (json.status !== "feasible" || !json.routes) {
-        throw new Error(json.message || json.error || 'Python VRP solver: no feasible solution');
-    }
-
-    return json.routes.map(r => r.nodes);
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
- * Main solver entry point.
- * Tries C++ server first, falls back to Python server with a locally-built matrix.
+ * Solve a Vehicle Routing Problem using the C++ VRP server.
+ *
+ * This is the single entry point for all route-optimisation calls in the
+ * frontend. If the C++ server is unreachable or returns an error the
+ * exception is propagated to the caller — there is no silent fallback.
+ *
+ * The `dbNodes` and `distanceMatrix` parameters are accepted for API
+ * compatibility but are not used; the C++ server derives costs from the DB.
+ *
+ * @param req            - VRP problem definition (graph, vehicles, tasks).
+ * @param _dbNodes       - Unused. Kept for call-site compatibility.
+ * @param _distanceMatrix - Unused. Kept for call-site compatibility.
+ * @returns An object containing the per-vehicle `paths` (node ID arrays)
+ *          and `server: 'cpp'` indicating which backend was used.
+ * @throws  Error if the C++ server is unavailable or returns no solution.
  */
 export async function solveVRP(
     req: VrpRequest,
-    dbNodes: DBNode[],
-    distanceMatrix?: number[][],
-): Promise<{ paths: number[][]; server: 'cpp' | 'python' }> {
+    _dbNodes?: DBNode[],
+    _distanceMatrix?: number[][],
+): Promise<{ paths: number[][]; server: 'cpp' }> {
+    console.log(`[VRP] Submitting solve request to C++ server (${CPP_VRP_URL})...`);
 
-    // Try C++ server first
-    try {
-        console.log(`[VRP] Trying C++ server (${CPP_VRP_URL})...`);
-        const paths = await solveCpp(req);
-        console.log(`[VRP] ✅ C++ server returned ${paths.length} routes`);
-        return { paths, server: 'cpp' };
-    } catch (cppErr) {
-        console.warn(`[VRP] C++ server unavailable:`, cppErr);
-    }
+    // Any exception from solveCpp is intentionally re-thrown so the caller
+    // (e.g. the dispatch modal) can display a meaningful error to the user.
+    const paths = await solveCpp(req);
 
-    // Fallback to Python server
-    if (distanceMatrix) {
-        try {
-            console.log(`[VRP] Trying Python server (${PY_VRP_URL})...`);
-
-            // Full index map: node ID → full matrix index
-            const idToFullIdx = new Map<number, number>();
-            dbNodes.forEach((n, i) => idToFullIdx.set(n.id, i));
-
-            const depotFullIdx = dbNodes.findIndex(n => n.type === 'depot');
-            const depotNodeId = dbNodes[depotFullIdx >= 0 ? depotFullIdx : 0].id;
-
-            // Collect only the nodes that matter: depot + all pickup + delivery nodes
-            const requiredNodeIds = new Set<number>([depotNodeId]);
-            for (const pd of req.pickups_deliveries) {
-                requiredNodeIds.add(pd.pickup);
-                requiredNodeIds.add(pd.delivery);
-            }
-
-            // Build ordered list of required nodes (depot first)
-            const requiredNodes = [
-                dbNodes.find(n => n.id === depotNodeId)!,
-                ...dbNodes.filter(n => n.id !== depotNodeId && requiredNodeIds.has(n.id)),
-            ];
-
-            // Build reduced N×N matrix using shortest paths from the full matrix
-            const reducedMatrix = requiredNodes.map(rowNode => {
-                const rowIdx = idToFullIdx.get(rowNode.id)!;
-                return requiredNodes.map(colNode => {
-                    const colIdx = idToFullIdx.get(colNode.id)!;
-                    return distanceMatrix[rowIdx][colIdx];
-                });
-            });
-
-            // Map required node IDs to their index in the reduced matrix
-            const idToReducedIdx = new Map<number, number>();
-            requiredNodes.forEach((n, i) => idToReducedIdx.set(n.id, i));
-
-            // Build pickup/delivery pairs using reduced indices
-            const requests: { pickup_index: number; delivery_index: number }[] = [];
-            for (const pd of req.pickups_deliveries) {
-                const u = idToReducedIdx.get(pd.pickup);
-                const v = idToReducedIdx.get(pd.delivery);
-                if (u !== undefined && v !== undefined) {
-                    requests.push({ pickup_index: u, delivery_index: v });
-                } else {
-                    console.warn(`[VRP] Could not map node IDs ${pd.pickup} or ${pd.delivery} to reduced index`);
-                }
-            }
-
-            const depotReducedIdx = 0; // depot is always first in requiredNodes
-
-            console.log(`[VRP] Reduced matrix: ${requiredNodes.length} nodes (from ${dbNodes.length}):`, requiredNodes.map(n => n.alias || n.id));
-
-            const routeIdxPaths = await solvePython(reducedMatrix, requests, req.num_vehicles, depotReducedIdx);
-
-            // Map reduced indices back to real node IDs
-            const paths = routeIdxPaths.map(r => r.map(reducedIdx => requiredNodes[reducedIdx].id));
-
-            console.log(`[VRP] ✅ Python server returned ${paths.length} routes`);
-            return { paths, server: 'python' };
-        } catch (pyErr) {
-            console.error(`[VRP] Python server also failed:`, pyErr);
-            throw new Error(`Both VRP servers failed. Make sure at least one is running:\n• C++ server: docker compose up (in vrp_server/)\n• Python server: python main.py (in Services/vrp_server/)`);
-        }
-    }
-
-    throw new Error(
-        'C++ VRP server is not running. Start it with: docker compose up (in vrp_server/)\n' +
-        'Or start the Python server: python main.py (in Services/vrp_server/)'
-    );
+    console.log(`[VRP] C++ server returned ${paths.length} route(s)`);
+    return { paths, server: 'cpp' };
 }
 
 /**
- * Check which VRP server is available.
+ * Check whether the C++ VRP server is reachable via its /health endpoint.
+ *
+ * The `python` field is always `false` as the Python server has been removed.
+ *
+ * @returns `{ cpp: boolean; python: false }`
  */
-export async function checkVrpServers(): Promise<{ cpp: boolean; python: boolean }> {
-    const check = async (url: string): Promise<boolean> => {
-        try {
-            const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
-            return res.ok;
-        } catch {
-            return false;
-        }
-    };
-
-    const [cpp, python] = await Promise.all([check(CPP_VRP_URL), check(PY_VRP_URL)]);
-    return { cpp, python };
+export async function checkVrpServers(): Promise<{ cpp: boolean; python: false }> {
+    let cpp = false;
+    try {
+        const res = await fetch(`${CPP_VRP_URL}/health`, {
+            signal: AbortSignal.timeout(2000),
+        });
+        cpp = res.ok;
+    } catch {
+        cpp = false;
+    }
+    return { cpp, python: false };
 }

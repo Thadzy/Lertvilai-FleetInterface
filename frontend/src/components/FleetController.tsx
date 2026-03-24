@@ -22,6 +22,8 @@ import ReactFlow, {
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
+  useStore,
   type Node,
   type Edge,
   Panel,
@@ -103,64 +105,83 @@ const PATH_POLL_INTERVAL_MS = 1000;
 
 /** Status colors for robot markers */
 const ROBOT_STATUS_COLORS: Record<FleetRobot["status"], string> = {
-  idle: "bg-green-500 border-green-200",
-  busy: "bg-blue-500 border-blue-200",
-  offline: "bg-gray-100 dark:bg-white/50 border-gray-200 dark:border-white/10",
-  error: "bg-red-500 border-red-200",
+  idle: "bg-green-500 border-green-300",
+  busy: "bg-blue-500 border-blue-300",
+  offline: "bg-gray-400 border-gray-300",
+  error: "bg-red-500 border-red-300",
 } as const;
 
+/** Per-vehicle accent colors for HUD and path edges */
+const VEHICLE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#ef4444"];
+
 /**
- * Robot Node - Moving robot markers with status indication.
- * Uses CSS transitions for smooth movement.
+ * Robot Node - Animated robot markers with pulsing ring on BUSY status.
  */
 const RobotNode = memo<NodeProps<RobotNodeData>>(({ data }) => {
   const { label, status, battery } = data;
   const color = ROBOT_STATUS_COLORS[status] || ROBOT_STATUS_COLORS.offline;
+  const isBusy = status === "busy";
 
   return (
-    <div className="relative flex flex-col items-center justify-center pointer-events-none">
+    <div className="relative flex flex-col items-center justify-center pointer-events-none select-none">
+      {/* Pulsing ring - only when BUSY */}
+      {isBusy && (
+        <>
+          <div className="absolute w-14 h-14 rounded-full bg-blue-400/30 animate-ping" style={{ animationDuration: "1.2s" }} />
+          <div className="absolute w-12 h-12 rounded-full bg-blue-400/20 animate-ping" style={{ animationDuration: "1.6s", animationDelay: "0.3s" }} />
+        </>
+      )}
+
       {/* Robot Label */}
-      <div className="absolute -top-8 bg-gray-900/90 dark:bg-[#121214]/90 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm backdrop-blur-sm whitespace-nowrap z-50">
+      <div className="absolute -top-9 bg-gray-900/95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shadow-lg backdrop-blur-sm whitespace-nowrap z-50 border border-white/10">
         {label}
       </div>
 
       {/* Robot Body */}
       <div
-        className={`w-10 h-10 ${color} rounded-lg shadow-xl flex items-center justify-center border-2 transition-all duration-300`}
+        className={`relative w-11 h-11 ${color} rounded-xl shadow-2xl flex items-center justify-center border-2 z-10`}
+        style={{ transition: "background-color 0.3s" }}
       >
-        <Truck size={20} className="text-white relative z-10" />
-        <div className="absolute -top-1 w-1.5 h-1.5 bg-yellow-400 rounded-full z-20" />
+        <Truck size={22} className="text-white drop-shadow-sm" />
+        {/* Status dot */}
+        <div className={`absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full border-2 border-white shadow ${isBusy ? "bg-yellow-400 animate-pulse" : status === "idle" ? "bg-green-300" : "bg-gray-300"}`} />
       </div>
 
-      {/* Battery Indicator */}
-      <div className="absolute -bottom-6 flex gap-1">
-        {battery !== undefined && (
+      {/* Battery bar */}
+      <div className="absolute -bottom-7 flex flex-col items-center gap-0.5">
+        <div className="w-10 h-1.5 bg-gray-700 rounded-full overflow-hidden">
           <div
-            className={`bg-slate-800 text-[8px] px-1 rounded flex items-center gap-0.5 border border-gray-200 dark:border-white/10 ${battery > 20 ? "text-green-400" : "text-red-400"
-              }`}
-          >
-            <Battery size={8} /> {battery}%
-          </div>
-        )}
+            className={`h-full rounded-full transition-all duration-500 ${battery > 50 ? "bg-green-400" : battery > 20 ? "bg-yellow-400" : "bg-red-400"}`}
+            style={{ width: `${battery}%` }}
+          />
+        </div>
+        <span className="text-[8px] text-gray-300 font-mono">{battery}%</span>
       </div>
 
-      {/* Invisible Handles for Path Edges */}
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="mobile-source"
-        style={{ opacity: 0, top: "50%", left: "50%" }}
-      />
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="mobile-target"
-        style={{ opacity: 0, top: "50%", left: "50%" }}
-      />
+      <Handle type="source" position={Position.Bottom} id="mobile-source" style={{ opacity: 0, top: "50%", left: "50%" }} />
+      <Handle type="target" position={Position.Top} id="mobile-target" style={{ opacity: 0, top: "50%", left: "50%" }} />
     </div>
   );
 });
 RobotNode.displayName = "RobotNode";
+
+/**
+ * AutoFitView - null-rendering child of ReactFlow that calls fitView when simulation starts.
+ * Must live inside <ReactFlow> to use useReactFlow().
+ */
+const AutoFitView = memo(({ trigger }: { trigger: boolean }) => {
+  const { fitView } = useReactFlow();
+  const prev = useRef(false);
+  useEffect(() => {
+    if (trigger && !prev.current) {
+      setTimeout(() => fitView({ padding: 0.15, duration: 800 }), 200);
+    }
+    prev.current = trigger;
+  }, [trigger, fitView]);
+  return null;
+});
+AutoFitView.displayName = "AutoFitView";
+
 
 /**
  * Connection Status Badge - Shows MQTT connection state.
@@ -372,6 +393,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
   const [dbRobots, setDbRobots] = useState<DBRobot[]>([]);
   const [cellMap, setCellMap] = useState<Map<number, number>>(new Map());
   const [nodeAliasMap, setNodeAliasMap] = useState<Map<number, string>>(new Map());
+  const [nodesLoaded, setNodesLoaded] = useState(false);
 
   // Track active paths per robot (robotId -> list of node aliases)
   const [robotPathDetails, setRobotPathDetails] = useState<Map<number, string[]>>(new Map());
@@ -451,6 +473,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           });
 
           setNodeAliasMap(aliasMap);
+          setNodesLoaded(true);
 
           // Add Map Background
           if (graphData.map_url) {
@@ -589,6 +612,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
   const simIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const simStepRef = useRef<number[]>([]); // current step index per vehicle
   const currentSimRoutesRef = useRef<string>(""); // Track currently running simulation to prevent double-starts
+  const simPausedRef = useRef(false); // Read inside interval callback without stale-closure issues
 
   useEffect(() => {
     // Cleanup any existing simulation
@@ -598,13 +622,15 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     }
 
     if (!simulationRoutes || simulationRoutes.length === 0) {
-      // Clear simulation robots and path edges
-      setNodes((prev) => prev.filter((n) => !n.id.startsWith("sim-robot-")));
+      // Clear simulation path edges
       setEdges((prev) => prev.filter((e) => !e.id.startsWith("sim-path-")));
       setRobotPathDetails(new Map());
       currentSimRoutesRef.current = "";
       return;
     }
+
+    // Wait for nodes to be loaded from the database before spawning robots
+    if (!nodesLoaded) return;
 
     const newSimHash = JSON.stringify(simulationRoutes);
     if (newSimHash === currentSimRoutesRef.current) {
@@ -612,32 +638,15 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     }
     currentSimRoutesRef.current = newSimHash;
 
-    // Initialize step counters
+    // Initialize step counters and reset pause state
     simStepRef.current = simulationRoutes.map(() => 0);
-    addLog("[Simulation] Engine started - Generating virtual trajectories");
+    simPausedRef.current = false;
+    addLog("[Simulation] Route dispatched - highlighting paths");
 
     // Build node position map from current static nodes
     const getNodePos = (nodeId: number): { x: number; y: number } | null => {
       return nodePositionsRef.current.get(String(nodeId)) || null;
     };
-
-    // Create initial dummy robots at the first node of each route
-    const initialRobots: Node[] = simulationRoutes.map((route, vi) => {
-      const startPos = getNodePos(route[0]) || { x: 50, y: 50 + vi * 80 };
-      return {
-        id: `sim-robot-${vi}`,
-        type: "robotNode",
-        position: { x: startPos.x, y: startPos.y },
-        data: {
-          label: `Vehicle ${vi + 1}`,
-          status: "busy" as FleetRobot["status"],
-          battery: 100 - vi * 10,
-        } as RobotNodeData,
-        draggable: false,
-        zIndex: 100,
-        style: { transition: "transform 0.8s ease-in-out" },
-      };
-    });
 
     // Set initial path details for table
     const initialPathDetails = new Map<number, string[]>();
@@ -646,12 +655,6 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
       initialPathDetails.set(vi, aliases);
     });
     setRobotPathDetails(initialPathDetails);
-
-    // Add initial robots to nodes
-    setNodes((prev) => {
-      const withoutSimRobots = prev.filter((n) => !n.id.startsWith("sim-robot-"));
-      return [...withoutSimRobots, ...initialRobots];
-    });
 
     // Highlight all path edges
     const simEdges: Edge[] = [];
@@ -662,7 +665,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           source: String(route[i]),
           target: String(route[i + 1]),
           animated: true,
-          style: { stroke: vi === 0 ? "#22c55e" : vi === 1 ? "#3b82f6" : "#f59e0b", strokeWidth: 3 },
+          style: { stroke: VEHICLE_COLORS[vi % VEHICLE_COLORS.length], strokeWidth: 3 },
           zIndex: 5,
           type: "straight",
         });
@@ -677,7 +680,13 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     // Defer interval start by one tick so nodePositionsRef is populated
     const startSimulation = () => {
       simIntervalRef.current = setInterval(() => {
+        // Pause: skip tick but keep interval alive so resume restarts from same position
+        if (simPausedRef.current) return;
+
         let allDone = true;
+
+        const edgesToDim: string[] = [];
+        const logMessages: string[] = [];
 
         simulationRoutes.forEach((route, vi) => {
           const currentStep = simStepRef.current[vi];
@@ -688,36 +697,28 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           simStepRef.current[vi] = nextStep;
 
           const nextNodeId = route[nextStep];
-          const nextPos = nodePositionsRef.current.get(String(nextNodeId));
-
-          if (nextPos) {
+          if (nextNodeId !== undefined) {
             const nodeAlias = nodeAliasMapRef.current.get(nextNodeId) || `Node ${nextNodeId}`;
             if (nextStep % 3 === 0) {
-              addLog(`[Sim] Vehicle ${vi + 1} → ${nodeAlias}`);
+              logMessages.push(`[Route] V${vi + 1} → ${nodeAlias}`);
             }
-
-            setNodes((prev) =>
-              prev.map((n) => {
-                if (n.id === `sim-robot-${vi}`) {
-                  return { ...n, position: { x: nextPos.x, y: nextPos.y } };
-                }
-                return n;
-              }),
-            );
           }
 
-          // Dim completed edges
+          // Dim traversed edges
           if (nextStep > 0) {
-            setEdges((prev) =>
-              prev.map((e) => {
-                if (e.id === `sim-path-${vi}-${currentStep - 1}`) {
-                  return { ...e, animated: false, style: { ...e.style, opacity: 0.3 } };
-                }
-                return e;
-              }),
-            );
+            edgesToDim.push(`sim-path-${vi}-${currentStep - 1}`);
           }
         });
+
+        if (edgesToDim.length > 0) {
+          const dimSet = new Set(edgesToDim);
+          setEdges((prev) =>
+            prev.map((e) =>
+              dimSet.has(e.id) ? { ...e, animated: false, style: { ...e.style, opacity: 0.3 } } : e
+            )
+          );
+        }
+        logMessages.forEach((msg) => addLog(msg));
 
         if (allDone) {
           addLog("[Simulation] All vehicles have reached their destinations");
@@ -729,8 +730,8 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
       }, 1200); // Move every 1.2 seconds
     };
 
-    // Wait 300ms for nodePositionsRef to sync after nodes update
-    const startTimeout = setTimeout(startSimulation, 300);
+    // Defer by one tick so nodePositionsRef has synced after setNodes calls above
+    const startTimeout = setTimeout(startSimulation, 50);
 
     return () => {
       clearTimeout(startTimeout);
@@ -740,7 +741,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulationRoutes]);
+  }, [simulationRoutes, nodesLoaded]);
 
   // --- PATH VISUALIZATION & SEQUENCE EXTRACTION ---
   useEffect(() => {
@@ -896,6 +897,9 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           </div>
         </Panel>
 
+        {/* Auto-fit view when simulation starts */}
+        <AutoFitView trigger={!!(simulationRoutes && simulationRoutes.length > 0)} />
+
         {/* BOTTOM PANEL - ROBOT TABLE & LOGS */}
         <Panel position="bottom-center" className="m-4 w-[95%] max-w-5xl flex gap-4" style={{ pointerEvents: 'none' }}>
 
@@ -928,32 +932,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
                     />
                   ))}
 
-                  {/* Render Simulation Robots (if active) */}
-                  {simulationRoutes && simulationRoutes.length > 0 &&
-                    simulationRoutes.map((route, vi) => {
-                      const pathAliases = robotPathDetails.get(vi) || [];
-                      const simRobot: FleetRobot = {
-                        id: 1000 + vi, // Offset to avoid ID collisions
-                        name: `Vehicle ${vi + 1} (Sim)`,
-                        status: "busy",
-                        battery: 100 - vi * 10,
-                        x: 0,
-                        y: 0,
-                        currentTask: `VRP Route (${route.length} steps)`,
-                        isActive: true,
-                        activePath: pathAliases,
-                      };
-                      return (
-                        <RobotTableRow
-                          key={`sim-${vi}`}
-                          robot={simRobot}
-                          onCommand={() => { }}
-                        />
-                      );
-                    })
-                  }
-
-                  {robots.length === 0 && (!simulationRoutes || simulationRoutes.length === 0) && (
+                  {robots.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-5 py-10 text-center text-gray-500 dark:text-gray-400 text-xs italic opacity-70">
                         No robots detected in fleet.

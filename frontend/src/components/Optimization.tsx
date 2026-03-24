@@ -41,7 +41,7 @@ interface SolverSolution {
 
 interface OptimizationProps {
   graphId: number;
-  onDispatch?: (routes: number[][]) => void;
+  onDispatch?: (expandedRoutes: number[][], vrpWaypoints: number[][], nodes: DBNode[]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +82,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
   // -- Solver state --
   const [isSolving, setIsSolving] = useState(false);
   const [vrpSolution, setVrpSolution] = useState<SolverSolution | null>(null);
+  const [vrpRawPaths, setVrpRawPaths] = useState<number[][] | null>(null);
   const [vrpError, setVrpError] = useState<string | null>(null);
   const [showVrpVisualizer, setShowVrpVisualizer] = useState(false);
 
@@ -328,6 +329,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
       };
 
       setVrpSolution(sol);
+      setVrpRawPaths(paths);
       console.log(`[VRP] Solution: ${routes.length} routes via ${server} server`);
 
     } catch (err: unknown) {
@@ -588,8 +590,8 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                   {onDispatch && (
                     <button
                       onClick={() => {
-                        const routes = vrpSolution!.routes.map(r => r.nodes || r.steps.map(s => s.node_id));
-                        onDispatch(routes);
+                        const expandedRoutes = vrpSolution!.routes.map(r => r.nodes || r.steps.map(s => s.node_id));
+                        onDispatch(expandedRoutes, vrpRawPaths ?? expandedRoutes, mapData?.nodes ?? []);
                       }}
                       className="py-2.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-md shadow-green-500/20"
                     >
