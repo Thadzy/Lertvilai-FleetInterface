@@ -27,7 +27,7 @@ export const WaypointNode = ({ data, selected, isConnectable }: NodeProps) => {
   return (
     <div className="group relative flex flex-col items-center justify-center">
 
-      {/* Tooltip Label */}
+      {/* Detail Tooltip — visible only on hover, shows type/level/height metadata */}
       {data.label && (
         <div className="absolute -top-12 flex flex-col items-center z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 translate-y-2 group-hover:translate-y-0">
           <div className="bg-gray-900/95 dark:bg-[#121214]/95 text-white text-[10px] px-2.5 py-1.5 rounded-md shadow-xl backdrop-blur-md whitespace-nowrap flex items-center gap-2 border border-gray-300 dark:border-white/10">
@@ -70,16 +70,92 @@ export const WaypointNode = ({ data, selected, isConnectable }: NodeProps) => {
         )}
       </div>
 
-      {/* Centralized Connection Handles - All 4 directions forced to 1x1 strict center to prevent offset tilt */}
-      <Handle type="target" position={Position.Top} id="t-top" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="target" position={Position.Bottom} id="t-bot" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="target" position={Position.Left} id="t-left" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="target" position={Position.Right} id="t-right" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
+      {/*
+       * Persistent Alias Label — always visible below the node body.
+       *
+       * Positioned with `top: 100%` so it sits directly beneath the node circle
+       * and uses `zIndex: 40` (above the node body's z-20) so it is never
+       * obscured by adjacent nodes or the ReactFlow canvas layer.  A semi-
+       * transparent backdrop ensures readability over both light and dark map
+       * backgrounds.
+       */}
+      {data.label && (
+        <div
+          className="absolute pointer-events-none"
+          style={{ top: '100%', marginTop: '5px', zIndex: 40, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
+        >
+          <span className="bg-gray-900/75 dark:bg-black/70 text-white text-[8px] font-mono font-bold px-1.5 py-0.5 rounded shadow-md backdrop-blur-sm border border-white/10 leading-none">
+            {data.label}
+          </span>
+        </div>
+      )}
 
-      <Handle type="source" position={Position.Top} id="s-top" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="source" position={Position.Bottom} id="s-bot" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="source" position={Position.Left} id="s-left" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
-      <Handle type="source" position={Position.Right} id="s-right" className="opacity-0 cursor-crosshair z-10" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '1px', height: '1px', border: 'none', minWidth: 0, minHeight: 0 }} isConnectable={!!isConnectable} />
+      {/* Centralized Connection Handles - All 4 directions forced to 10x10 strict center to prevent offset tilt */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="t-top"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="t-bot"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="t-left"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="target"
+        position={Position.Right}
+        id="t-right"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="s-top"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="s-bot"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="s-left"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="s-right"
+        className={`cursor-crosshair z-50 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '10px', height: '10px', border: 'none', minWidth: 0, minHeight: 0, backgroundColor: '#3b82f6', borderRadius: '50%' }}
+        isConnectable={!!isConnectable}
+      />
     </div>
   );
 };

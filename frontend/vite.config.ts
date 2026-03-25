@@ -28,6 +28,11 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/api\/fleet/, ''),
       },
+      '/api/robot-gw': {
+        target: 'http://10.61.6.87:8080',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/robot-gw/, ''),
+      },
     }
   },
   // @ts-expect-error - vitest types are not automatically detected in some environments

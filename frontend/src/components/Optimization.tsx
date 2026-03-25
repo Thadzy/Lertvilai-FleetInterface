@@ -1,13 +1,14 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Cpu, Play, Plus, ArrowRight, Loader2, AlertCircle, CheckCircle2,
-  MapIcon, Trash2, X, Eye, Send
+  MapIcon, Trash2, X, Eye, Send, Zap
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { localAStar, generateDistanceMatrix } from '../utils/solverUtils';
 import { solveVRP } from '../utils/vrpApi';
 import { type DBNode, type DBEdge } from '../types/database';
 import RouteVisualizer from './RouteVisualizer';
+import { type GQLRobot, type RequestOrderResult } from '../hooks/useFleetGateway';
 
 
 
@@ -42,6 +43,10 @@ interface SolverSolution {
 interface OptimizationProps {
   graphId: number;
   onDispatch?: (expandedRoutes: number[][], vrpWaypoints: number[][], nodes: DBNode[]) => void;
+  gqlRobots?: GQLRobot[];
+  simMode?: boolean;
+  onGQLDispatch?: (robotName: string, pickupAlias: string, deliveryAlias: string) => Promise<RequestOrderResult>;
+  activeRobotName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +64,7 @@ interface OptimizationProps {
  *
  * @param graphId - The warehouse graph ID to load nodes/edges from.
  */
-const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
+const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch, gqlRobots, simMode, onGQLDispatch, activeRobotName }) => {
 
 
 
@@ -95,6 +100,44 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
   // -- Node Selection Mode --
   const [selectingMode, setSelectingMode] = useState<'pickup' | 'delivery' | null>(null);
 
+  // -- Direct GQL Dispatch (per-task, manual) --
+  const [selectedRobotName, setSelectedRobotName] = useState<string>('');
+  const [gqlDispatchingId, setGqlDispatchingId] = useState<number | null>(null);
+  const [gqlDispatchResults, setGqlDispatchResults] = useState<Record<number, { ok: boolean; msg: string }>>({});
+
+  // Sync local robot selection when the globally active robot changes.
+  useEffect(() => {
+    if (activeRobotName) setSelectedRobotName(activeRobotName);
+  }, [activeRobotName]);
+
+  // Auto-load map data on mount so the right-panel RouteVisualizer renders
+  // immediately and node dropdowns are populated without requiring manual interaction.
+  useEffect(() => {
+    void loadMapData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphId]);
+
+  // -- VRP Batch Dispatch state (sendRequestOrder workaround) --
+  const [isVrpDispatching, setIsVrpDispatching] = useState(false);
+  const [vrpDispatchResults, setVrpDispatchResults] = useState<Array<{ taskId: number; ok: boolean; msg: string }>>([]);
+
+  // -----------------------------------------------------------------------
+  // HELPERS (Memoized)
+  // -----------------------------------------------------------------------
+
+  /** All loaded node options for the dropdown selectors. */
+  const nodeOptions = useMemo(() => mapData?.nodes || [], [mapData]);
+
+  /**
+   * Looks up a node alias by its string ID.
+   * @param id - The node ID as a string.
+   * @returns The alias or a fallback label.
+   */
+  const getNodeLabel = useCallback((id: string): string => {
+    const node = nodeOptions.find(n => String(n.id) === id);
+    return node?.alias || `Node ${id}`;
+  }, [nodeOptions]);
+
   // -----------------------------------------------------------------------
   // DATA LOADING
   // -----------------------------------------------------------------------
@@ -108,7 +151,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
     if (!graphId) return null;
     try {
       const { data: nodeData } = await supabase
-        .from('wh_nodes_view').select('*').eq('graph_id', graphId);
+        .from('wh_nodes_detailed_view').select('*').eq('graph_id', graphId);
       const { data: edgeData } = await supabase
         .from('wh_edges').select('*').eq('graph_id', graphId);
       const { data: graphRecord } = await supabase
@@ -198,6 +241,174 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
     setVrpError(null);
     setNextTaskId(1);
   };
+
+  // -----------------------------------------------------------------------
+  // DIRECT GQL DISPATCH
+  // -----------------------------------------------------------------------
+
+  const handleGQLDispatch = useCallback(async (task: QueuedTask) => {
+    if (!selectedRobotName || !onGQLDispatch) return;
+
+    // Guard: block dispatch if robot is not in a safe / ready state.
+    const gqlRobot = gqlRobots?.find(r => r.name === selectedRobotName);
+    if (gqlRobot) {
+      if (gqlRobot.connectionStatus !== 'ONLINE') {
+        setGqlDispatchResults(prev => ({
+          ...prev,
+          [task.id]: { ok: false, msg: `Robot is OFFLINE` },
+        }));
+        return;
+      }
+      if (gqlRobot.lastActionStatus === 'OPERATING') {
+        setGqlDispatchResults(prev => ({
+          ...prev,
+          [task.id]: { ok: false, msg: `Robot is OPERATING — wait or Hard Reset first` },
+        }));
+        return;
+      }
+      if (gqlRobot.lastActionStatus === 'ERROR') {
+        setGqlDispatchResults(prev => ({
+          ...prev,
+          [task.id]: { ok: false, msg: `Robot is in ERROR — perform Hard Reset first` },
+        }));
+        return;
+      }
+    }
+
+    const pickupAlias   = getNodeLabel(task.pickup);
+    const deliveryAlias = getNodeLabel(task.delivery);
+    setGqlDispatchingId(task.id);
+    try {
+      const result = await onGQLDispatch(selectedRobotName, pickupAlias, deliveryAlias);
+      setGqlDispatchResults(prev => ({
+        ...prev,
+        [task.id]: {
+          ok: result.success,
+          msg: result.success
+            ? `UUID: ${result.request?.uuid?.slice(0, 8) ?? '?'}… · ${result.request?.status ?? result.message}`
+            : result.message,
+        },
+      }));
+    } catch (err) {
+      setGqlDispatchResults(prev => ({
+        ...prev,
+        [task.id]: { ok: false, msg: err instanceof Error ? err.message : String(err) },
+      }));
+    } finally {
+      setGqlDispatchingId(null);
+    }
+  }, [selectedRobotName, onGQLDispatch, gqlRobots, getNodeLabel]);
+
+  // -----------------------------------------------------------------------
+  // VRP BATCH DISPATCH  —  sendRequestOrder workaround
+  // -----------------------------------------------------------------------
+
+  /**
+   * Dispatches all VRP-optimised tasks to the robot via `sendRequestOrder`.
+   *
+   * @remarks
+   * **Why this exists — the executePathOrder Redis bug**
+   *
+   * The Fleet Gateway exposes two dispatch mutations:
+   *
+   * 1. `executePathOrder` — accepts a raw numeric VRP path (`vrpPath: [Int!]!`)
+   *    and persists it to the database.  However, it does **not** reliably
+   *    publish to the Redis pub/sub channel that the robot's motion controller
+   *    subscribes to.  The database record is written, the mutation returns
+   *    success, but the robot never receives the command.
+   *
+   * 2. `sendRequestOrder` — accepts string node aliases (`pickupNodeAlias`,
+   *    `deliveryNodeAlias`) and follows a separate server code-path that
+   *    **correctly** publishes to Redis, causing the robot to move.
+   *
+   * Until the Fleet Gateway's `executePathOrder` Redis integration is fixed,
+   * this function bridges the gap by decomposing the VRP solution back into
+   * individual pickup-delivery pairs and firing one `sendRequestOrder` call
+   * per task in VRP-optimised visit order.
+   *
+   * @param expandedRoutes - Full A*-expanded node-ID paths, one per vehicle.
+   *   Passed to `onDispatch` for visual route rendering on the Fleet tab.
+   *   No robot command is sent through this channel.
+   */
+  const handleVRPDispatch = useCallback(async (expandedRoutes: number[][]) => {
+    if (!onGQLDispatch || !selectedRobotName || !vrpRawPaths) return;
+
+    // Step 1 — hand expanded routes to FleetInterface for visual rendering only.
+    // The actual robot command will NOT travel through onDispatch; it goes via
+    // sendRequestOrder below.
+    onDispatch?.(expandedRoutes, vrpRawPaths, mapData?.nodes ?? []);
+
+    setIsVrpDispatching(true);
+    setVrpDispatchResults([]);
+
+    /**
+     * Determine the VRP-optimised visit order for the task queue.
+     *
+     * Strategy: for each task, find the first index at which its pickup node
+     * appears in vehicle 0's raw path (the only vehicle with a guaranteed
+     * robot mapping in the current single-robot setup).  Tasks whose pickup
+     * does not appear in any path are appended at the end in their original
+     * queue order so they are never silently dropped.
+     */
+    const vehiclePath = vrpRawPaths[0] ?? [];
+    const sortedTasks = [...taskQueue].sort((a, b) => {
+      const idxA = vehiclePath.indexOf(parseInt(a.pickup));
+      const idxB = vehiclePath.indexOf(parseInt(b.pickup));
+      // Tasks not found in the path sort to the end.
+      const rankA = idxA === -1 ? Infinity : idxA;
+      const rankB = idxB === -1 ? Infinity : idxB;
+      return rankA - rankB;
+    });
+
+    const accumulated: Array<{ taskId: number; ok: boolean; msg: string }> = [];
+
+    for (const task of sortedTasks) {
+      const pickupAlias   = getNodeLabel(task.pickup);
+      const deliveryAlias = getNodeLabel(task.delivery);
+
+      if (simMode) {
+        // Simulation mode — log the intended command without hitting the network.
+        console.log(
+          `[Optimization] [SIM] sendRequestOrder skipped.\n` +
+          `  Robot: ${selectedRobotName}  Task #${task.id}: ${pickupAlias} → ${deliveryAlias}`,
+        );
+        accumulated.push({ taskId: task.id, ok: true, msg: `[SIM] ${pickupAlias} → ${deliveryAlias}` });
+        setVrpDispatchResults([...accumulated]);
+        continue;
+      }
+
+      try {
+        const result = await onGQLDispatch(selectedRobotName, pickupAlias, deliveryAlias);
+        accumulated.push({
+          taskId: task.id,
+          ok: result.success,
+          msg: result.success
+            ? `✓ UUID: ${result.request?.uuid?.slice(0, 8) ?? '?'}… · ${result.request?.status ?? 'QUEUED'}`
+            : `✗ ${result.message}`,
+        });
+      } catch (err) {
+        accumulated.push({
+          taskId: task.id,
+          ok: false,
+          msg: `✗ ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+
+      // Stream intermediate results so the UI updates after each task.
+      setVrpDispatchResults([...accumulated]);
+    }
+
+    setIsVrpDispatching(false);
+  }, [
+    selectedRobotName,
+    onGQLDispatch,
+    onDispatch,
+    vrpRawPaths,
+    taskQueue,
+    mapData,
+    simMode,
+    getNodeLabel,
+  ]);
 
   // -----------------------------------------------------------------------
   // A* PREVIEW (single task)
@@ -351,23 +562,6 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
   };
 
   // -----------------------------------------------------------------------
-  // HELPERS
-  // -----------------------------------------------------------------------
-
-  /** All loaded node options for the dropdown selectors. */
-  const nodeOptions = mapData?.nodes || [];
-
-  /**
-   * Looks up a node alias by its string ID.
-   * @param id - The node ID as a string.
-   * @returns The alias or a fallback label.
-   */
-  const getNodeLabel = (id: string): string => {
-    const node = nodeOptions.find(n => String(n.id) === id);
-    return node?.alias || `Node ${id}`;
-  };
-
-  // -----------------------------------------------------------------------
   // RENDER
   // -----------------------------------------------------------------------
 
@@ -416,7 +610,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                   <option value="">Select start node...</option>
                   {nodeOptions.map(n => (
                     <option key={n.id} value={n.id}>
-                      {n.alias || `Node ${n.id}`} ({n.type})
+                      {n.alias || `Node ${n.id}`}{n.type ? ` (${n.type})` : ''}{(n.level_alias || n.levelAlias) ? ` [${n.level_alias || n.levelAlias}]` : ''}
                     </option>
                   ))}
                 </select>
@@ -480,7 +674,11 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                     onChange={e => setNewPickup(e.target.value)}
                   >
                     <option value="">From...</option>
-                    {nodeOptions.map(n => <option key={n.id} value={n.id}>{n.alias || `Node ${n.id}`}</option>)}
+                    {nodeOptions.map(n => (
+                      <option key={n.id} value={n.id}>
+                        {n.alias || `Node ${n.id}`}{n.type && n.type !== 'waypoint' ? ` (${n.type})` : ''}{(n.level_alias || n.levelAlias) ? ` [${n.level_alias || n.levelAlias}]` : ''}
+                      </option>
+                    ))}
                   </select>
                   <button
                     onClick={() => { loadMapData(); setSelectingMode('pickup'); }}
@@ -500,7 +698,11 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                     onChange={e => setNewDelivery(e.target.value)}
                   >
                     <option value="">To...</option>
-                    {nodeOptions.map(n => <option key={n.id} value={n.id}>{n.alias || `Node ${n.id}`}</option>)}
+                    {nodeOptions.map(n => (
+                      <option key={n.id} value={n.id}>
+                        {n.alias || `Node ${n.id}`}{n.type && n.type !== 'waypoint' ? ` (${n.type})` : ''}{(n.level_alias || n.levelAlias) ? ` [${n.level_alias || n.levelAlias}]` : ''}
+                      </option>
+                    ))}
                   </select>
                   <button
                     onClick={() => { loadMapData(); setSelectingMode('delivery'); }}
@@ -587,8 +789,8 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
             )}
 
             {vrpSolution && (
-              <div className="p-4 bg-green-50 border border-green-200 dark:bg-green-500/10 dark:border-green-500/20 rounded-xl">
-                <div className="flex items-center justify-between mb-3">
+              <div className="p-4 bg-green-50 border border-green-200 dark:bg-green-500/10 dark:border-green-500/20 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 size={18} className="text-green-600 dark:text-green-400" />
                     <span className="text-sm font-bold text-green-800 dark:text-green-300">Solution Ready</span>
@@ -597,7 +799,14 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                     {vrpSolution.routes.length} Vehicles
                   </span>
                 </div>
-                
+
+                {/* Robot not selected warning */}
+                {!selectedRobotName && onGQLDispatch && (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 font-bold bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg px-3 py-1.5">
+                    ⚠ Select a robot in the Direct GQL Dispatch panel below before dispatching.
+                  </p>
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={async () => {
@@ -608,22 +817,133 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
                   >
                     <MapIcon size={14} /> VIEW MAP
                   </button>
-                  {onDispatch && (
-                    <button
-                      onClick={() => {
-                        const expandedRoutes = vrpSolution!.routes.map(r => r.nodes || r.steps.map(s => s.node_id));
-                        onDispatch(expandedRoutes, vrpRawPaths ?? expandedRoutes, mapData?.nodes ?? []);
-                      }}
-                      className="py-2.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-md shadow-green-500/20"
-                    >
-                      <Send size={14} /> DISPATCH
-                    </button>
-                  )}
+
+                  {/*
+                   * DISPATCH — routes tasks via sendRequestOrder (not executePathOrder).
+                   *
+                   * executePathOrder saves to the DB but does not trigger the Redis
+                   * pub/sub channel the robot listens on, so the robot never moves.
+                   * sendRequestOrder uses a different server code-path that correctly
+                   * publishes to Redis.  handleVRPDispatch decomposes the VRP solution
+                   * into individual pickup-delivery tasks and fires one sendRequestOrder
+                   * call per task in VRP-optimised visit order.
+                   */}
+                  <button
+                    onClick={() => {
+                      const expandedRoutes = vrpSolution!.routes.map(r => r.nodes || r.steps.map(s => s.node_id));
+                      void handleVRPDispatch(expandedRoutes);
+                    }}
+                    disabled={isVrpDispatching || (!selectedRobotName && !!onGQLDispatch)}
+                    className="py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-white/10 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-md shadow-green-500/20 disabled:cursor-not-allowed"
+                  >
+                    {isVrpDispatching
+                      ? <><Loader2 size={13} className="animate-spin" /> DISPATCHING...</>
+                      : <><Send size={14} /> DISPATCH</>}
+                  </button>
                 </div>
+
+                {/* Per-task dispatch results */}
+                {vrpDispatchResults.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-green-200 dark:border-green-500/20">
+                    {vrpDispatchResults.map(r => (
+                      <p
+                        key={r.taskId}
+                        className={`text-[10px] font-mono truncate ${r.ok ? 'text-green-700 dark:text-green-400' : 'text-red-500'}`}
+                        title={r.msg}
+                      >
+                        #{r.taskId} {r.msg}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
+        {/* -- Direct GQL Dispatch Card -- */}
+        {onGQLDispatch && gqlRobots && taskQueue.length > 0 && (
+          <div className="bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl shadow-sm flex flex-col shrink-0 overflow-hidden">
+            <div className={`px-5 py-3 border-b border-gray-100 dark:border-white/5 ${simMode ? 'bg-amber-50/50 dark:bg-amber-500/10' : 'bg-gradient-to-r from-green-50/50 to-emerald-50/50 dark:from-white/5 dark:to-transparent'}`}>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Zap className={simMode ? 'text-amber-500' : 'text-green-500'} size={16} />
+                Direct GQL Dispatch
+                {simMode && (
+                  <span className="text-[10px] font-mono bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded ml-1">
+                    SIM
+                  </span>
+                )}
+              </h2>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {/* Robot selector */}
+              <div>
+                <label className="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block mb-1.5">
+                  Target Robot
+                </label>
+                <select
+                  className="w-full text-xs p-2 border border-gray-200 dark:border-white/10 rounded-lg bg-gray-50 dark:bg-white/5 focus:ring-2 focus:ring-green-200 focus:border-green-400 outline-none"
+                  value={selectedRobotName}
+                  onChange={e => setSelectedRobotName(e.target.value)}
+                >
+                  <option value="">Select robot...</option>
+                  {gqlRobots.map(r => {
+                    const notReady = r.connectionStatus !== 'ONLINE' || r.lastActionStatus === 'ERROR' || r.lastActionStatus === 'OPERATING';
+                    return (
+                      <option key={r.name} value={r.name} disabled={r.connectionStatus !== 'ONLINE'}>
+                        {notReady ? '⚠ ' : ''}{r.name} · {r.connectionStatus} · {r.lastActionStatus}
+                      </option>
+                    );
+                  })}
+                </select>
+                {/* Warn when selected robot is not in a dispatchable state */}
+                {(() => {
+                  const sel = gqlRobots.find(r => r.name === selectedRobotName);
+                  if (!sel) return null;
+                  if (sel.lastActionStatus === 'ERROR')
+                    return <p className="text-[10px] text-red-500 mt-1 font-bold">⚠ Robot is in ERROR state — perform Hard Reset before dispatching.</p>;
+                  if (sel.lastActionStatus === 'OPERATING')
+                    return <p className="text-[10px] text-amber-500 mt-1 font-bold">⚠ Robot is OPERATING — wait for it to become IDLE or Hard Reset first.</p>;
+                  return null;
+                })()}
+              </div>
+
+              {/* Per-task send buttons */}
+              <div className="space-y-1.5">
+                {taskQueue.map(task => {
+                  const res = gqlDispatchResults[task.id];
+                  const isSending = gqlDispatchingId === task.id;
+                  return (
+                    <div key={task.id} className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2 bg-gray-50 dark:bg-white/5 border border-gray-100 dark:border-white/5 rounded-xl px-3 py-2 text-xs">
+                        <span className="font-mono text-gray-400 w-5">#{task.id}</span>
+                        <span className="font-bold text-green-700 dark:text-green-400 truncate">{getNodeLabel(task.pickup)}</span>
+                        <ArrowRight size={10} className="text-gray-300 dark:text-gray-600 shrink-0" />
+                        <span className="font-bold text-red-700 dark:text-red-400 truncate flex-1">{getNodeLabel(task.delivery)}</span>
+                        <button
+                          onClick={() => handleGQLDispatch(task)}
+                          disabled={!selectedRobotName || isSending}
+                          className="shrink-0 flex items-center gap-1 px-2 py-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-white/10 text-white text-[10px] font-bold rounded-lg transition-colors disabled:cursor-not-allowed"
+                          title="Send to robot gateway"
+                        >
+                          {isSending
+                            ? <Loader2 size={11} className="animate-spin" />
+                            : <Send size={11} />}
+                        </button>
+                      </div>
+                      {/* Result message below each row */}
+                      {res && (
+                        <p className={`text-[10px] px-3 font-mono truncate ${res.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`} title={res.msg}>
+                          {res.ok ? '✓ ' : '✗ '}{res.msg}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ================================================================= */}
@@ -644,16 +964,10 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch }) => {
           />
         ) : (
           <div className="text-center z-10 p-8">
-             <div className="w-16 h-16 bg-gray-100 dark:bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4 animate-[pulse_3s_ease-in-out_infinite]">
-              <MapIcon size={24} className="text-gray-400" />
+            <div className="w-16 h-16 bg-gray-100 dark:bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Loader2 size={24} className="text-gray-400 animate-spin" />
             </div>
-            <button
-              onClick={loadMapData}
-              className="text-sm font-bold text-blue-600 hover:text-blue-800 hover:underline"
-            >
-              Load Graph Layout Data
-            </button>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Required before queueing tasks</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Loading graph layout…</p>
           </div>
         )}
       </div>

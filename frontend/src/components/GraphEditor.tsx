@@ -98,8 +98,21 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
   // Shelf Detail State
   const [showShelfPanel, setShowShelfPanel] = useState(false);
   const [shelfCells, setShelfCells] = useState<{ id: number; alias: string; levelAlias: string | null; level_id: number | null }[]>([]);
-  const [newCellAlias, setNewCellAlias] = useState('');
   const [newCellLevel, setNewCellLevel] = useState('');
+
+  // Toast Notification State
+  const [toasts, setToasts] = useState<{ id: number; msg: string; type: 'success' | 'error' | 'info' }[]>([]);
+
+  /**
+   * Display a temporary toast notification.
+   * @param msg  - Human-readable message to display.
+   * @param type - Visual variant: 'success' | 'error' | 'info'.
+   */
+  const showToast = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, msg, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }, []);
 
   // All nodes (before level filter)
   const [allNodes, setAllNodes] = useState<Node[]>([]);
@@ -307,11 +320,11 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
       }
 
       setBgUrl(publicUrl);
-      alert('Map uploaded successfully!');
+      showToast('Map uploaded successfully!', 'success');
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       console.error(error);
-      alert(`Upload failed: ${msg}`);
+      showToast(`Upload failed: ${msg}`, 'error');
     } finally {
       setUploading(false);
       if (event.target) event.target.value = ''; // Reset input to allow re-uploading the same file
@@ -329,7 +342,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
       }
       setBgUrl(null);
     } catch {
-      alert('Failed to remove image');
+      showToast('Failed to remove background image', 'error');
     } finally {
       setUploading(false);
     }
@@ -338,71 +351,116 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
   // Level Management
   const handleCreateLevel = async () => {
     if (!newLevelAlias.trim()) return;
-    const result = await createLevel(newLevelAlias.trim(), parseFloat(newLevelHeight) || 0);
-    if (result) {
-      setNewLevelAlias('');
-      setNewLevelHeight('0');
-      // Reload to get updated levels
-      const { levels: updatedLevels } = await loadGraph();
-      setLevels(updatedLevels);
+    try {
+      const result = await createLevel(newLevelAlias.trim(), parseFloat(newLevelHeight) || 0);
+      if (result) {
+        setNewLevelAlias('');
+        setNewLevelHeight('0');
+        const { levels: updatedLevels } = await loadGraph();
+        setLevels(updatedLevels);
+        showToast(`Level "${newLevelAlias.trim()}" created`, 'success');
+      }
+    } catch (err) {
+      showToast(`Failed to create level: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
   const handleDeleteLevel = async (levelId: number) => {
     if (!window.confirm('Delete this level? All cells on this level will also be deleted.')) return;
-    const success = await deleteLevel(levelId);
-    if (success) {
-      const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-      setAllNodes(dbNodes);
-      setNodes(dbNodes);
-      setEdges(dbEdges);
-      setLevels(updatedLevels);
-      if (selectedLevel === levelId) setSelectedLevel(null);
+    try {
+      const success = await deleteLevel(levelId);
+      if (success) {
+        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
+        setAllNodes(dbNodes);
+        setNodes(dbNodes);
+        setEdges(dbEdges);
+        setLevels(updatedLevels);
+        if (selectedLevel === levelId) setSelectedLevel(null);
+        showToast('Level deleted', 'success');
+      }
+    } catch (err) {
+      showToast(`Failed to delete level: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
   // Cell Management (via Shelf)
+  /**
+   * Create a new cell on the selected shelf with an auto-generated alias in the
+   * canonical format `S{shelf_number}C{cell_number}L{level_number}`.
+   *
+   * - `shelf_number` — numeric suffix extracted from the shelf alias (e.g. "S3" → 3).
+   * - `cell_number`  — next sequential index based on cells already on this shelf.
+   * - `level_number` — numeric suffix extracted from the level alias (e.g. "L2" → 2).
+   *
+   * This enforces a consistent naming convention across the warehouse graph and
+   * eliminates free-form input that could produce invalid or duplicate aliases.
+   */
   const handleCreateCell = async () => {
     if (!selectedNode || selectedNode.data?.type !== 'shelf') return;
-    if (!newCellAlias.trim() || !newCellLevel) return;
+    if (!newCellLevel) return;
 
-    const shelfAlias = selectedNode.data.label;
+    const shelfAlias: string = selectedNode.data.label ?? '';
     const levelObj = levels.find(l => l.id === parseInt(newCellLevel));
     if (!levelObj) return;
 
-    const result = await createCell(shelfAlias, levelObj.alias, newCellAlias.trim());
-    if (result) {
-      setNewCellAlias('');
-      setNewCellLevel('');
-      // Reload graph
-      const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-      setAllNodes(dbNodes);
-      setNodes(dbNodes);
-      setEdges(dbEdges);
-      setLevels(updatedLevels);
+    // Extract numeric component from shelf alias (e.g. "S3" → 3, "Shelf2" → 2).
+    const shelfNumMatch = shelfAlias.match(/(\d+)/);
+    const shelfNum = shelfNumMatch ? shelfNumMatch[1] : shelfAlias;
+
+    // Next cell index: count existing cells on this shelf + 1.
+    const cellNum = shelfCells.length + 1;
+
+    // Extract numeric component from level alias (e.g. "L2" → 2, "Level3" → 3).
+    const levelNumMatch = levelObj.alias.match(/(\d+)/);
+    const levelNum = levelNumMatch ? levelNumMatch[1] : levelObj.alias;
+
+    const cellAlias = `S${shelfNum}C${cellNum}L${levelNum}`;
+
+    try {
+      const result = await createCell(shelfAlias, levelObj.alias, cellAlias);
+      if (result) {
+        setNewCellLevel('');
+        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
+        setAllNodes(dbNodes);
+        setNodes(dbNodes);
+        setEdges(dbEdges);
+        setLevels(updatedLevels);
+        showToast(`Cell "${cellAlias}" created`, 'success');
+      }
+    } catch (err) {
+      showToast(`Failed to create cell: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
   const handleDeleteCell = async (cellId: number) => {
     if (!window.confirm('Delete this cell?')) return;
-    const success = await deleteCell(cellId);
-    if (success) {
-      const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-      setAllNodes(dbNodes);
-      setNodes(dbNodes);
-      setEdges(dbEdges);
-      setLevels(updatedLevels);
+    try {
+      const success = await deleteCell(cellId);
+      if (success) {
+        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
+        setAllNodes(dbNodes);
+        setNodes(dbNodes);
+        setEdges(dbEdges);
+        setLevels(updatedLevels);
+        showToast('Cell deleted', 'success');
+      }
+    } catch (err) {
+      showToast(`Failed to delete cell: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
   // Reload helper
   const reloadGraph = async () => {
-    const { nodes: dbNodes, edges: dbEdges, mapUrl, levels: dbLevels } = await loadGraph();
-    setAllNodes(dbNodes);
-    setNodes(dbNodes);
-    setEdges(dbEdges);
-    setBgUrl(mapUrl || null);
-    setLevels(dbLevels);
+    try {
+      const { nodes: dbNodes, edges: dbEdges, mapUrl, levels: dbLevels } = await loadGraph();
+      setAllNodes(dbNodes);
+      setNodes(dbNodes);
+      setEdges(dbEdges);
+      setBgUrl(mapUrl || null);
+      setLevels(dbLevels);
+    } catch (err) {
+      showToast(`Reload failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
   };
 
   // --- Node type label for "add" dropdown ---
@@ -430,6 +488,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
         connectionLineType={ConnectionLineType.Straight}
         nodesDraggable={toolMode === 'move'}
         nodesConnectable={toolMode === 'connect'}
+        panOnDrag={toolMode !== 'connect'}
         onPaneClick={() => setNodes((nds) => nds.map((n) => ({ ...n, selected: false })))}
       >
 
@@ -640,32 +699,41 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                     </div>
                   ))}
 
-                  {/* Add Cell Form */}
+                  {/* Add Cell Form — alias is auto-generated as S{N}C{N}L{N} */}
                   {levels.length > 0 ? (
-                    <div className="flex gap-1 mt-2">
-                      <input
-                        type="text"
-                        placeholder="Cell alias"
-                        value={newCellAlias}
-                        onChange={(e) => setNewCellAlias(e.target.value)}
-                        className="flex-1 text-[10px] px-2 py-1 border border-slate-300 rounded focus:outline-none focus:border-blue-500"
-                      />
-                      <select
-                        value={newCellLevel}
-                        onChange={(e) => setNewCellLevel(e.target.value)}
-                        className="text-[10px] px-1 py-1 border border-slate-300 rounded bg-white focus:outline-none focus:border-blue-500"
-                      >
-                        <option value="">Level</option>
-                        {levels.map(l => (
-                          <option key={l.id} value={l.id}>{l.alias}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={handleCreateCell}
-                        className="px-2 py-1 bg-cyan-600 text-white text-[10px] font-bold rounded hover:bg-cyan-700"
-                      >
-                        <Plus size={10} />
-                      </button>
+                    <div className="mt-2">
+                      <div className="flex gap-1">
+                        <select
+                          value={newCellLevel}
+                          onChange={(e) => setNewCellLevel(e.target.value)}
+                          className="flex-1 text-[10px] px-1 py-1 border border-slate-300 dark:border-white/10 rounded bg-white dark:bg-[#09090b] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        >
+                          <option value="">Select level…</option>
+                          {levels.map(l => (
+                            <option key={l.id} value={l.id}>{l.alias}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={handleCreateCell}
+                          disabled={!newCellLevel}
+                          className="px-2 py-1 bg-cyan-600 text-white text-[10px] font-bold rounded hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Plus size={10} />
+                        </button>
+                      </div>
+                      {/* Preview the auto-generated alias */}
+                      {newCellLevel && (() => {
+                        const levelObj = levels.find(l => l.id === parseInt(newCellLevel));
+                        const shelfAlias: string = selectedNode?.data?.label ?? '';
+                        const shelfNum = (shelfAlias.match(/(\d+)/) ?? [, shelfAlias])[1];
+                        const levelNum = levelObj ? (levelObj.alias.match(/(\d+)/) ?? [, levelObj.alias])[1] : '?';
+                        const cellNum = shelfCells.length + 1;
+                        return (
+                          <p className="text-[9px] text-cyan-600 font-mono mt-1">
+                            Will create: <strong>S{shelfNum}C{cellNum}L{levelNum}</strong>
+                          </p>
+                        );
+                      })()}
                     </div>
                   ) : (
                     <p className="text-[10px] text-amber-500 mt-2">Create levels first before adding cells</p>
@@ -774,13 +842,22 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
 
               <button
                 onClick={async () => {
-                  const success = await saveGraph(allNodes, edges, bgUrl);
-                  if (success) await reloadGraph();
+                  try {
+                    const success = await saveGraph(allNodes, edges, bgUrl);
+                    if (success) {
+                      await reloadGraph();
+                      showToast('Graph configuration saved successfully', 'success');
+                    } else {
+                      showToast('Save returned no confirmation — check console', 'error');
+                    }
+                  } catch (err) {
+                    showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+                  }
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white text-xs font-bold rounded-lg hover:bg-slate-700 shadow-md transition-all active:translate-y-0.5"
               >
                 <Save size={14} />
-                <span>SAVE</span>
+                <span>Save Complete Graph Configuration</span>
               </button>
             </div>
           </div>
@@ -801,6 +878,24 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
               </>
             )}
           </div>
+        </Panel>
+
+        {/* --- TOAST NOTIFICATIONS --- */}
+        <Panel position="bottom-right" className="mb-12 mr-2 flex flex-col gap-1.5 pointer-events-none">
+          {toasts.map(t => (
+            <div
+              key={t.id}
+              className={`px-3 py-2 rounded-lg text-xs font-bold shadow-lg border backdrop-blur-sm animate-in slide-in-from-right-4 fade-in ${
+                t.type === 'success'
+                  ? 'bg-green-500/90 border-green-400/50 text-white'
+                  : t.type === 'error'
+                    ? 'bg-red-500/90 border-red-400/50 text-white'
+                    : 'bg-slate-800/90 border-white/10 text-slate-100'
+              }`}
+            >
+              {t.msg}
+            </div>
+          ))}
         </Panel>
 
         <Controls />

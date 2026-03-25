@@ -10,7 +10,6 @@
  * - Dispatch closed-loop batch path commands to the backend.
  */
 
-import type { DBNode } from '../types/database';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -37,12 +36,33 @@ export const setFleetPaused = (state: boolean): void => {
   console.log(`[Fleet Gateway] Fleet global state set to: ${command}`);
 };
 
+/**
+ * Maps VRP vehicle indices (0-based) to physical robot names.
+ * Vehicle 0 is updated dynamically via `setVehicleRobot()` whenever the
+ * operator selects a different robot in the UI, so no robot name is
+ * hardcoded beyond the initial bootstrap default.
+ */
 export const VEHICLE_ROBOT_MAP: Record<number, string> = {
-  0: 'FACOBOT',
-} as const;
+  0: 'LOCALBOT',
+};
+
+/**
+ * Updates the vehicle→robot mapping at runtime.
+ *
+ * Called from `FleetInterface` whenever `activeRobotName` changes so that
+ * `dispatchVehicleRoute` always targets the currently selected robot without
+ * requiring a page reload or code change.
+ *
+ * @param vehicleIndex - Zero-based VRP vehicle slot to remap.
+ * @param robotName    - Physical robot name as registered in the Fleet Gateway.
+ */
+export const setVehicleRobot = (vehicleIndex: number, robotName: string): void => {
+  VEHICLE_ROBOT_MAP[vehicleIndex] = robotName;
+  console.log(`[FleetGateway] Vehicle ${vehicleIndex} remapped → "${robotName}"`);
+};
 
 const getFallbackRobotName = (): string => {
-  return VEHICLE_ROBOT_MAP[0] ?? Object.values(VEHICLE_ROBOT_MAP)[0] ?? 'FACOBOT';
+  return VEHICLE_ROBOT_MAP[0] ?? Object.values(VEHICLE_ROBOT_MAP)[0] ?? 'LOCALBOT';
 };
 
 // ---------------------------------------------------------------------------
@@ -105,16 +125,16 @@ async function gql<T = unknown>(
 /**
  * Execute a closed-loop batch path command on a named robot.
  *
- * Translates to the new Fleet Gateway mutation:
- * ```graphql
- * mutation ExecutePathOrder($order: ExecutePathOrderInput!) {
- * executePathOrder(order: $order) { success message job { uuid status } }
- * }
- * ```
+ * Uses the `executePathOrder` mutation which accepts `ExecutePathOrderInput`:
+ *   `{ robotName: String!, graphId: Int!, vrpPath: [Int!]! }`
  *
- * @param robotName - Registered robot name (e.g. "FACOBOT").
- * @param graphId - The database graph ID (e.g. 1).
- * @param vrpPath - Array of node indices from VRP (e.g. [1, 62, 71, 1]).
+ * The `vrpPath` field MUST be numeric node IDs — the backend's `route_oracle`
+ * resolves them to physical coordinates internally.  Alias conversion is the
+ * responsibility of `sendRequestOrder` (single-task path), not this function.
+ *
+ * @param robotName - Registered robot name (e.g. "LOCALBOT").
+ * @param graphId   - The database graph ID (e.g. 1).
+ * @param vrpPath   - Ordered numeric node IDs from the VRP solver (e.g. [1, 86, 80, 1]).
  * @returns The mutation result.
  */
 export async function executePathOrder(
@@ -173,32 +193,35 @@ export const beginNewDispatchBatch = (): AbortSignal => {
 
 /**
  * Dispatches a full VRP sequence to the backend as a single batch command.
- * * The backend service (fleet_gateway) will take this array, expand it into A* * coordinates via route_oracle, and manage the point-to-point movement using 
- * closed-loop distance checking.
  *
- * @param vehicleIndex - Zero-based VRP vehicle index.
- * @param graphId      - ID of the warehouse graph (e.g. 1).
- * @param vrpWaypoints - Ordered node IDs from the VRP solver (e.g. [1, 62, 71, 1]).
- * @returns            Aggregated dispatch result with per-node log.
+ * Sends `vrpWaypoints` as-is (numeric node IDs) via `executePathOrder`
+ * (`ExecutePathOrderInput.vrpPath: [Int!]!`).  The readable alias label is
+ * built by the caller and forwarded here only for log display.
+ *
+ * @param vehicleIndex  - Zero-based VRP vehicle index.
+ * @param graphId       - ID of the warehouse graph (e.g. 1).
+ * @param vrpWaypoints  - Ordered **numeric** node IDs from the VRP solver (e.g. [1, 86, 80, 1]).
+ * @param aliasLabel    - Optional human-readable representation for log messages only.
+ * @returns             Aggregated dispatch result with per-node log.
  */
 export async function dispatchVehicleRoute(
   vehicleIndex: number,
   graphId: number,
   vrpWaypoints: number[],
+  aliasLabel?: string,
 ): Promise<RouteDispatchResult> {
   const robotName = VEHICLE_ROBOT_MAP[vehicleIndex] ?? getFallbackRobotName();
   const log: string[] = [];
   let dispatched = 0;
 
+  const display = aliasLabel ?? vrpWaypoints.join(' → ');
   console.log(
-    `[Fleet] Batch Dispatching Vehicle ${vehicleIndex + 1} → ${robotName} ` +
-    `(Graph: ${graphId}, Path: ${vrpWaypoints.join(' -> ')})`
+    `[Fleet] Dispatching Vehicle ${vehicleIndex + 1} → ${robotName} ` +
+    `(Graph: ${graphId}, IDs: [${vrpWaypoints.join(', ')}], Aliases: ${display})`
   );
 
   if (!(vehicleIndex in VEHICLE_ROBOT_MAP)) {
-    log.push(
-      `[System] Vehicle ${vehicleIndex + 1} has no explicit mapping; using fallback robot ${robotName}.`,
-    );
+    log.push(`[System] Vehicle ${vehicleIndex + 1} has no explicit mapping; using fallback robot ${robotName}.`);
   }
 
   if (dispatchAbortController.signal.aborted) {
@@ -207,11 +230,11 @@ export async function dispatchVehicleRoute(
   }
 
   try {
-    // ─── Single Batch Execution Call ───────────────────────────────────────
+    // ─── Single Batch Execution Call (vrpPath: [Int!]!) ────────────────────
     const result = await executePathOrder(robotName, graphId, vrpWaypoints);
 
-    log.push(`✓ Batch command dispatched to ${robotName}. Backend handling execution.`);
-    log.push(`Job Status: ${result.job?.status ?? 'UNKNOWN'}`);
+    log.push(`✓ Batch dispatched to ${robotName} — path: ${display}`);
+    log.push(`  Job UUID: ${result.job?.uuid ?? 'n/a'}  Status: ${result.job?.status ?? 'UNKNOWN'}`);
     dispatched = 1;
 
   } catch (err) {

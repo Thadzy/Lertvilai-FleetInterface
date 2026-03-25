@@ -47,6 +47,11 @@ import {
   Map as MapIcon,
   ChevronsRight,
   Terminal,
+  RotateCcw,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Loader2,
 } from "lucide-react";
 
 import { supabase } from "../lib/supabaseClient";
@@ -55,6 +60,7 @@ import { useFleetSocket, type ConnectionStatus } from "../hooks/useFleetSocket";
 import { useThemeStore } from "../store/themeStore";
 import WaypointNode from "./nodes/WaypointNode";
 import { cancelAllDispatches, setFleetPaused } from "../utils/fleetGateway";
+import { type GQLRobot, type HardResetProgress } from "../hooks/useFleetGateway";
 
 
 // ============================================
@@ -253,7 +259,11 @@ ConnectionStatusBadge.displayName = "ConnectionStatusBadge";
 const RobotTableRow = memo<{
   robot: FleetRobot;
   onCommand: (robotId: number, command: string, robotName: string) => void;
-}>(({ robot, onCommand }) => {
+  gqlRobot?: GQLRobot;
+  onHardReset?: () => void;
+  isResetting?: boolean;
+  isActive?: boolean;
+}>(({ robot, onCommand, gqlRobot, onHardReset, isResetting, isActive }) => {
   const handlePause = useCallback(
     () => onCommand(robot.id, "PAUSE", robot.name),
     [robot.id, robot.name, onCommand],
@@ -268,10 +278,17 @@ const RobotTableRow = memo<{
   );
 
   return (
-    <tr className="border-b border-slate-50 last:border-0 hover:bg-gray-100 dark:bg-white/5/50 transition-colors">
+    <tr className={`border-b border-slate-50 last:border-0 transition-colors ${
+      isActive
+        ? 'bg-blue-500/5 dark:bg-blue-500/10 hover:bg-blue-500/10 dark:hover:bg-blue-500/15'
+        : 'hover:bg-gray-100 dark:bg-white/5/50'
+    }`}>
       {/* Robot Name & ID */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
+          {isActive && (
+            <span className="w-1 h-full min-h-[32px] rounded-full bg-blue-500 shrink-0" />
+          )}
           <div className={`p-1.5 rounded-lg ${robot.status === 'idle' ? 'bg-green-100 text-green-600' :
             robot.status === 'busy' ? 'bg-blue-100 text-blue-600' :
               'bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors text-gray-500 dark:text-gray-400'
@@ -285,18 +302,30 @@ const RobotTableRow = memo<{
         </div>
       </td>
 
-      {/* Status Badge */}
+      {/* Status Badge — MQTT status + GQL overlay */}
       <td className="px-4 py-3">
-        <span
-          className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${robot.status === "idle"
-            ? "bg-green-100 text-green-600"
-            : robot.status === "busy"
-              ? "bg-blue-100 text-blue-600"
-              : "bg-red-100 text-red-600"
-            }`}
-        >
-          {robot.status}
-        </span>
+        <div className="flex flex-col gap-1">
+          <span
+            className={`px-2 py-1 rounded text-[10px] font-bold uppercase w-fit ${robot.status === "idle"
+              ? "bg-green-100 text-green-600"
+              : robot.status === "busy"
+                ? "bg-blue-100 text-blue-600"
+                : "bg-red-100 text-red-600"
+              }`}
+          >
+            {robot.status}
+          </span>
+          {gqlRobot && (
+            <div className="flex gap-1">
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold w-fit ${gqlRobot.connectionStatus === 'ONLINE' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400' : 'bg-gray-100 text-gray-500 dark:bg-white/5 dark:text-gray-500'}`}>
+                {gqlRobot.connectionStatus}
+              </span>
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold w-fit ${gqlRobot.lastActionStatus === 'IDLE' ? 'bg-slate-100 text-slate-600 dark:bg-white/5 dark:text-slate-400' : gqlRobot.lastActionStatus === 'OPERATING' ? 'bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400' : 'bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400'}`}>
+                {gqlRobot.lastActionStatus}
+              </span>
+            </div>
+          )}
+        </div>
       </td>
 
       {/* Battery */}
@@ -359,6 +388,21 @@ const RobotTableRow = memo<{
           >
             <AlertOctagon size={16} />
           </button>
+          {onHardReset && (
+            <>
+              <div className="w-px h-4 bg-slate-200 mx-1" />
+              <button
+                onClick={onHardReset}
+                disabled={isResetting}
+                className="p-1.5 text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Hard Reset (4-step recovery)"
+              >
+                {isResetting
+                  ? <Loader2 size={16} className="animate-spin" />
+                  : <RotateCcw size={16} />}
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>
@@ -374,9 +418,13 @@ RobotTableRow.displayName = "RobotTableRow";
 interface FleetControllerProps {
   graphId: number;
   simulationRoutes?: number[][] | null;
+  gqlRobots?: GQLRobot[];
+  simMode?: boolean;
+  onHardReset?: (robotName: string, onProgress: (steps: HardResetProgress[]) => void) => Promise<void>;
+  activeRobotName?: string;
 }
 
-const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRoutes }) => {
+const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRoutes, gqlRobots, onHardReset, activeRobotName }) => {
   const { theme } = useThemeStore();
 
   // --- NODE TYPES (memoized outside render loop) ---
@@ -413,6 +461,9 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     forceReconnect,
     addLog,
   } = useFleetSocket();
+
+  // Hard Reset state — maps robotName → progress steps
+  const [hardResetStates, setHardResetStates] = useState<Map<string, HardResetProgress[]>>(new Map());
 
   // --- REFS (to avoid stale closures) ---
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -563,29 +614,46 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     loadStaticData();
   }, [graphId, setNodes, setEdges]);
 
-  // --- MERGE DB ROBOTS + MQTT STATUS (derived state) ---
+  // --- BUILD ROBOT LIST FROM LIVE GQL DATA (source of truth) ---
+  //
+  // gqlRobots (from useFleetGateway polling) is authoritative for which robots
+  // exist and what their names are.  The DB table (wh_robots) is intentionally
+  // NOT used here — stale names like "FACOBOT" in the DB would shadow the real
+  // gateway names and cause Hard Reset Step 4 "Robot not found" failures.
+  //
+  // Position / battery comes from robotStates (MQTT socket), looked up by name.
+  // A synthetic numeric id (1-based index) is assigned so downstream code that
+  // uses FleetRobot.id for ReactFlow node keys continues to work.
   const robots = useMemo<FleetRobot[]>(() => {
-    if (dbRobots.length === 0) return [];
+    // Fall back to MQTT state keys when GQL hasn't loaded yet so the map still
+    // shows any robots that are actively broadcasting.
+    const sources: { id: number; name: string }[] =
+      gqlRobots && gqlRobots.length > 0
+        ? gqlRobots.map((g, i) => ({ id: i + 1, name: g.name }))
+        : Object.keys(robotStates).map((key, i) => ({ id: i + 1, name: key }));
 
-    return dbRobots.map((dbBot) => {
-      const liveData = robotStates[dbBot.id] || robotStates[dbBot.name];
-      const activePath = robotPathDetails.get(dbBot.id);
+    if (sources.length === 0) return [];
+
+    return sources.map(({ id, name }) => {
+      // Look up live telemetry by name first, then by synthetic id.
+      const liveData = robotStates[name] ?? robotStates[id];
+      const activePath = robotPathDetails.get(id);
 
       return {
-        id: dbBot.id,
-        name: dbBot.name,
-        status: (liveData?.status || "offline") as FleetRobot["status"],
-        battery: liveData?.battery || 0,
+        id,
+        name,
+        status: (liveData?.status ?? 'offline') as FleetRobot['status'],
+        battery: liveData?.battery ?? 0,
         x: liveData ? liveData.x * MAP_SCALE : 50,
-        y: liveData ? liveData.y * MAP_SCALE : 50 + dbBot.id * 50,
+        y: liveData ? liveData.y * MAP_SCALE : 50 + id * 50,
         currentTask: liveData?.current_task_id
           ? `Task #${liveData.current_task_id}`
-          : "Idle",
+          : 'Idle',
         isActive: !!liveData,
-        activePath // Attach the path alias sequence
+        activePath,
       };
     });
-  }, [dbRobots, robotStates, robotPathDetails]);
+  }, [gqlRobots, robotStates, robotPathDetails]);
 
   // --- UPDATE ROBOT NODES IN REACTFLOW ---
   useEffect(() => {
@@ -866,6 +934,42 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     [publishCommand],
   );
 
+  // --- HARD RESET HANDLER ---
+  const handleHardReset = useCallback(async (robotName: string) => {
+    if (!onHardReset) return;
+    // Initialise progress immediately so the stepper appears
+    setHardResetStates(prev => {
+      const next = new Map(prev);
+      next.set(robotName, [
+        { stepId: 'cancel_current', label: 'Cancel Current Job',  status: 'pending' },
+        { stepId: 'clean_queue',    label: 'Clean Active Queue',  status: 'pending' },
+        { stepId: 'clear_error',    label: 'Clear Error State',   status: 'pending' },
+        { stepId: 'verify',         label: 'Verify IDLE Status',  status: 'pending' },
+      ]);
+      return next;
+    });
+
+    let finalSteps: HardResetProgress[] = [];
+    await onHardReset(robotName, (steps) => {
+      finalSteps = steps;
+      setHardResetStates(prev => {
+        const next = new Map(prev);
+        next.set(robotName, steps);
+        return next;
+      });
+    });
+
+    // Log outcome to the System Log panel once the full sequence finishes.
+    const allDone   = finalSteps.length > 0 && finalSteps.every(s => s.status === 'done');
+    const anyFailed = finalSteps.some(s => s.status === 'failed');
+    if (allDone) {
+      addLog(`[HardReset] ✓ ${robotName} successfully reset — all 4 steps passed. Robot is IDLE.`);
+    } else if (anyFailed) {
+      const failedLabels = finalSteps.filter(s => s.status === 'failed').map(s => s.label).join(', ');
+      addLog(`[HardReset] ⚠ ${robotName} reset finished with failures: ${failedLabels}`);
+    }
+  }, [onHardReset, addLog]);
+
   // --- RENDER ---
   return (
     <div className="w-full h-full bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors relative font-sans">
@@ -940,18 +1044,29 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
                     <th className="px-5 py-3 border-b border-gray-100 dark:border-white/5">Status</th>
                     <th className="px-5 py-3 border-b border-gray-100 dark:border-white/5">Battery</th>
                     <th className="px-5 py-3 border-b border-gray-100 dark:border-white/5">Current Activity & Path</th>
-                    <th className="px-5 py-3 border-b border-gray-100 dark:border-white/5 text-right">Controls</th>
+                    <th className="px-5 py-3 border-b border-gray-100 dark:border-white/5 text-right">
+                      Controls {onHardReset && <span className="ml-1 text-orange-400 font-normal normal-case">+ Reset</span>}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50 dark:divide-white/5">
                   {/* Render Live Robots from DB */}
-                  {robots.map((r) => (
-                    <RobotTableRow
-                      key={`live-${r.id}`}
-                      robot={r}
-                      onCommand={handleCommand}
-                    />
-                  ))}
+                  {robots.map((r) => {
+                    const gqlRobot = gqlRobots?.find(g => g.name === r.name);
+                    const resetSteps = hardResetStates.get(r.name);
+                    const isResetting = resetSteps?.some(s => s.status === 'running') ?? false;
+                    return (
+                      <RobotTableRow
+                        key={`live-${r.id}`}
+                        robot={r}
+                        onCommand={handleCommand}
+                        gqlRobot={gqlRobot}
+                        onHardReset={onHardReset ? () => handleHardReset(r.name) : undefined}
+                        isResetting={isResetting}
+                        isActive={r.name === activeRobotName}
+                      />
+                    );
+                  })}
 
                   {robots.length === 0 && (
                     <tr>
@@ -963,6 +1078,70 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
                 </tbody>
               </table>
             </div>
+
+            {/* Hard Reset Progress — shown when any reset is active or recently completed */}
+            {hardResetStates.size > 0 && (
+              <div className="border-t border-gray-100 dark:border-white/5 px-4 py-3 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[10px] font-bold uppercase text-orange-600 dark:text-orange-400 flex items-center gap-1.5">
+                    <RotateCcw size={11} /> Hard Reset Progress
+                  </h4>
+                  {/* Dismiss button — only when no step is actively running */}
+                  {Array.from(hardResetStates.values()).every(steps => steps.every(s => s.status !== 'running')) && (
+                    <button
+                      onClick={() => setHardResetStates(new Map())}
+                      className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+                {Array.from(hardResetStates.entries()).map(([robotName, steps]) => (
+                  <div key={robotName} className="space-y-2">
+                    <div className="text-[11px] font-bold text-gray-700 dark:text-gray-300">{robotName}</div>
+                    {/* Step indicators — horizontal stepper */}
+                    <div className="flex items-start gap-1">
+                      {steps.map((step, i) => {
+                        const Icon =
+                          step.status === 'running' ? Loader2 :
+                          step.status === 'done'    ? CheckCircle2 :
+                          step.status === 'failed'  ? XCircle : Clock;
+                        const color =
+                          step.status === 'running' ? 'text-blue-500 dark:text-blue-400' :
+                          step.status === 'done'    ? 'text-green-600 dark:text-green-400' :
+                          step.status === 'failed'  ? 'text-red-500' : 'text-gray-400 dark:text-gray-600';
+                        const bg =
+                          step.status === 'running' ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30' :
+                          step.status === 'done'    ? 'bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30' :
+                          step.status === 'failed'  ? 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30' :
+                          'bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/10';
+                        return (
+                          <React.Fragment key={step.stepId}>
+                            <div className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-lg border text-center ${bg}`}>
+                              <Icon size={13} className={`${color} ${step.status === 'running' ? 'animate-spin' : ''}`} />
+                              <span className={`text-[9px] font-bold leading-tight ${color}`}>{step.label}</span>
+                            </div>
+                            {i < steps.length - 1 && (
+                              <div className={`self-center w-3 h-px shrink-0 ${step.status === 'done' ? 'bg-green-400' : 'bg-gray-200 dark:bg-white/10'}`} />
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                    {/* Detail message for the most recent active/completed step */}
+                    {(() => {
+                      const active = [...steps].reverse().find(s => s.status !== 'pending' && s.detail);
+                      if (!active) return null;
+                      return (
+                        <p className={`text-[10px] font-mono px-1 break-all ${active.status === 'failed' ? 'text-red-500' : active.status === 'done' ? 'text-green-600 dark:text-green-400' : 'text-blue-500'}`}>
+                          {active.detail}
+                        </p>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Logs Side Panel */}
@@ -974,20 +1153,41 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
                 </span>
                 <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse" />
               </div>
-              <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
                 {logs.length === 0 && (
                   <div className="text-[10px] text-gray-500 dark:text-gray-500/70 italic text-center py-4">
                     Waiting for events...
                   </div>
                 )}
-                {logs.map((log, i) => (
-                  <div
-                    key={i}
-                    className="text-[10px] font-mono text-gray-600 dark:text-gray-400 border-b border-gray-50 dark:border-white/5 last:border-0 pb-1.5 break-words"
-                  >
-                    {log}
-                  </div>
-                ))}
+                {logs.map((log, i) => {
+                  // Classify log by its bracketed prefix (e.g. [ERROR], [HardReset], [Simulation]).
+                  const isError   = /\[error\]|\[estop\]|✗|\bfail/i.test(log);
+                  const isSuccess = /✓|successfully|success|reset.*passed|IDLE/i.test(log);
+                  const isWarn    = /⚠|warn|OPERATING|offline/i.test(log);
+                  const isSim     = /\[sim\]/i.test(log);
+
+                  const dot = isError   ? 'bg-red-500'
+                            : isSuccess ? 'bg-green-500'
+                            : isWarn    ? 'bg-amber-400'
+                            : isSim     ? 'bg-amber-500'
+                            : 'bg-blue-400';
+
+                  const text = isError   ? 'text-red-500 dark:text-red-400'
+                             : isSuccess ? 'text-green-700 dark:text-green-400'
+                             : isWarn    ? 'text-amber-600 dark:text-amber-400'
+                             : isSim     ? 'text-amber-600 dark:text-amber-400'
+                             : 'text-gray-600 dark:text-gray-400';
+
+                  return (
+                    <div
+                      key={i}
+                      className={`flex items-start gap-1.5 text-[10px] font-mono border-b border-gray-50 dark:border-white/5 last:border-0 pb-1 break-words ${text}`}
+                    >
+                      <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+                      <span>{log}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>

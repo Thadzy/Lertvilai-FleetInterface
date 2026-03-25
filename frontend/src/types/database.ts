@@ -55,6 +55,10 @@ export interface DBNode {
   type: NodeType;      // Functional role
   a: number;           // Orientation/Angle (in Degrees, usually 0-360)
   level: number;
+  /** Level alias from wh_nodes_detailed_view (e.g. "L1", "L3"). */
+  level_alias?: string;
+  /** Frontend-mapped camelCase alias for compatibility with useGraphData. */
+  levelAlias?: string;
 }
 
 /**

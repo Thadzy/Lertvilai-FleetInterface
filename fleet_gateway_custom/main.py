@@ -53,6 +53,14 @@ log = logging.getLogger(__name__)
 ACTION_SYNC_TIMEOUT_S = float(os.getenv("ACTION_SYNC_TIMEOUT_S", "300"))
 ACTION_SYNC_POLL_S = 1.0
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ── Enums ─────────────────────────────────────────────────────────────────────
 @strawberry.enum
 class RobotConnectionStatus(Enum):

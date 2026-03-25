@@ -83,22 +83,59 @@ const RouteVisualizer: React.FC<RouteVisualizerProps> = ({
     if ((!isOpen && !inline) || !dbNodes) return;
 
     // 1. SETUP NODES
-
     const scale = 100;
-    const flowNodes: Node[] = dbNodes.map(n => ({
-      id: String(n.id), // Stringify for ReactFlow
-      type: 'waypointNode',
-      position: { x: n.x * scale, y: n.y * scale },
-      data: {
-        label: n.alias || String(n.id),
-        type: n.type,
-        levelAlias: null
-      },
-      draggable: false,
-      style: {
-        zIndex: 10
+
+    // Pre-calculate shelf positions and cell counts for fanning logic
+    const shelfPositions = new Map<number, { x: number; y: number }>();
+    const cellsByShelf = new Map<number, number>();
+    const cellIndexByShelf = new Map<number, number>();
+
+    dbNodes.forEach(n => {
+      if (n.type === 'shelf') {
+        shelfPositions.set(n.id, { x: n.x, y: n.y });
       }
-    }));
+      if (n.type === 'cell' && (n as any).shelf_id != null) {
+        const sid = (n as any).shelf_id;
+        cellsByShelf.set(sid, (cellsByShelf.get(sid) || 0) + 1);
+      }
+    });
+
+    const flowNodes: Node[] = dbNodes.map(n => {
+      let posX = n.x * scale;
+      let posY = n.y * scale;
+
+      // Fanning logic for cells (mirroring useGraphData.ts)
+      if (n.type === 'cell' && (n as any).shelf_id != null) {
+        const sid = (n as any).shelf_id;
+        const shelfPos = shelfPositions.get(sid);
+        if (shelfPos) {
+          const cellIdx = cellIndexByShelf.get(sid) || 0;
+          cellIndexByShelf.set(sid, cellIdx + 1);
+          const totalCells = cellsByShelf.get(sid) || 1;
+          
+          // Arc math: arrange cells in a small arc below their shelf
+          const angle = -Math.PI / 2 + (cellIdx * Math.PI / 4) - ((totalCells - 1) * Math.PI / 8);
+          const radius = 50; // px offset from shelf center
+          posX = shelfPos.x * scale + Math.cos(angle) * radius;
+          posY = shelfPos.y * scale + Math.sin(angle) * radius + 40;
+        }
+      }
+
+      return {
+        id: String(n.id), // Stringify for ReactFlow
+        type: 'waypointNode',
+        position: { x: posX, y: posY },
+        data: {
+          label: n.alias || String(n.id),
+          type: n.type,
+          levelAlias: n.level_alias || (n as any).levelAlias || null
+        },
+        draggable: false,
+        style: {
+          zIndex: 10
+        }
+      };
+    });
 
     if (map_url) {
       let mapX = 0, mapY = 0, mapW = 1200, mapH = 800;
