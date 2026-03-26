@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../lib/supabaseClient';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -215,15 +216,53 @@ export function useFleetGateway(simMode: boolean): UseFleetGatewayReturn {
 
   // ── hardReset ─────────────────────────────────────────────────────────────
   /**
-   * Four-step reset sequence derived from the verified Python recovery script:
+   * Hard Force Reset — 4-step recovery sequence with direct database override.
    *
-   *   Step 1 — cancelCurrentJob(robotName)
-   *   Step 2 — query jobs { uuid status }, cancelJobs(uuids: [active UUIDs])
-   *   Step 3 — clearRobotError(robotName)          [mandatory to reach IDLE]
-   *   Step 4 — re-query robot, verify lastActionStatus === 'IDLE'
+   * @remarks
+   * ## Purpose
+   * Recovers the system from a desynchronised robot state where the fleet
+   * gateway believes the robot is OPERATING but the physical robot is idle
+   * (or unreachable).  This typically happens when:
+   *   - The gateway crashes mid-operation, leaving orphaned OPERATING records.
+   *   - The robot completes its task but the DB update never propagates.
+   *   - A previous cancel command was acknowledged by the gateway but not
+   *     written back to Supabase.
    *
-   * Progress is streamed via onProgress(steps[]) so the caller can render a
-   * live stepper without waiting for the full sequence to complete.
+   * ## Sequence
+   *
+   * | Step | ID               | Action                                         |
+   * |------|------------------|------------------------------------------------|
+   * |  1   | `cancel_current` | `cancelCurrentJob(robotName)` — GQL mutation   |
+   * |  2   | `clean_queue`    | `cancelJobs([...active UUIDs])` — GQL mutation |
+   * |  3   | `clear_error`    | `clearRobotError` + **Force DB Override**      |
+   * |  4   | `verify`         | Re-query gateway, assert IDLE/safe status      |
+   *
+   * ## Step 3 — Force Database Override (new)
+   * After the gateway-level `clearRobotError` mutation, this step directly
+   * patches three Supabase tables that may hold stale state records:
+   *
+   *   - `wh_robots`      → `status = 'idle'`      for the named robot
+   *   - `wh_assignments` → `status = 'cancelled'`  for `in_progress` /
+   *                        `partially_completed` rows owned by that robot
+   *   - `wh_requests`    → `status = 'cancelled'`  for all `in_progress` rows
+   *                        (best-effort; the schema carries no robot_id column)
+   *
+   * These writes complete **before** Step 4's IDLE poll so the first
+   * re-query immediately observes a clean gateway state.
+   *
+   * All database calls are best-effort: failures are logged but never abort
+   * the sequence.  The gateway-level mutations (Steps 1-3a) remain the
+   * authoritative recovery path; the DB override is a defensive safety net.
+   *
+   * ## Progress Streaming
+   * Progress is streamed via `onProgress(steps[])` after every state
+   * transition so the caller (FleetController) can render a live stepper
+   * without waiting for the full sequence to complete.
+   *
+   * @param robotName  - Exact name of the robot to reset (case-insensitive
+   *                     for the verify poll; exact for DB lookups).
+   * @param onProgress - Callback invoked with the full `HardResetProgress[]`
+   *                     array after every step state change.
    */
   const hardReset = useCallback(async (
     robotName: string,
@@ -232,7 +271,7 @@ export function useFleetGateway(simMode: boolean): UseFleetGatewayReturn {
     const steps: HardResetProgress[] = [
       { stepId: 'cancel_current', label: 'Cancel Current Job',  status: 'pending' },
       { stepId: 'clean_queue',    label: 'Clean Active Queue',  status: 'pending' },
-      { stepId: 'clear_error',    label: 'Clear Error State',   status: 'pending' },
+      { stepId: 'clear_error',    label: 'Clear Error & Force DB Reset', status: 'pending' },
       { stepId: 'verify',         label: 'Verify IDLE Status',  status: 'pending' },
     ];
 
@@ -322,25 +361,127 @@ export function useFleetGateway(simMode: boolean): UseFleetGatewayReturn {
       }
     }
 
-    // ── Step 3: Clear Error State ─────────────────────────────────────────
-    // Mandatory call to move the robot back to IDLE.
+    // ── Step 3: Clear Error State + Force Database Override ──────────────
+    /**
+     * Hard Force Reset — Database Override
+     * ──────────────────────────────────────
+     * When the fleet gateway and the robot hardware fall out of sync (e.g. the
+     * robot reaches its destination but the DB still shows IN_PROGRESS, or the
+     * gateway crashes mid-operation leaving orphaned OPERATING assignments),
+     * the standard `clearRobotError` mutation alone is not enough to unblock
+     * the Verify IDLE poll in Step 4.
+     *
+     * This sub-step performs a "hard force" by directly patching the three DB
+     * tables that hold stale state records:
+     *
+     *   1. `wh_robots`      — sets `status = 'idle'` for the named robot.
+     *   2. `wh_assignments` — cancels any `in_progress` or `partially_completed`
+     *                         assignments owned by that robot (looked up by id).
+     *   3. `wh_requests`    — cancels all `in_progress` requests.  Because the
+     *                         `wh_requests` schema carries no `robot_id` or
+     *                         `graph_id` column, this is a best-effort breadth-
+     *                         first cancel.  In single-robot deployments this is
+     *                         always safe.
+     *
+     * All three Supabase calls are wrapped in a single try-catch and treated as
+     * best-effort: any failure is logged and the sequence continues — the
+     * gateway-level mutations in the earlier steps are still the authoritative
+     * recovery path.  The DB override is a defensive layer, not a replacement.
+     *
+     * The DB overrides execute BEFORE the Verify IDLE poll (Step 4) so that
+     * the first gateway re-query immediately observes a clean state.
+     */
     push(2, { status: 'running', detail: `Calling clearRobotError(${robotName})…` });
     if (simRef.current) {
       await delay(SIM_DELAY);
-      push(2, { status: 'done', detail: '[SIM] clearRobotError acknowledged' });
+      push(2, { status: 'done', detail: '[SIM] clearRobotError + DB override acknowledged' });
     } else {
+      // 3a — Gateway-level error clear (non-fatal; DB override follows regardless).
+      let clearOk = false;
       try {
         await gqlFetch(
           `mutation ClearErr($name: String!) { clearRobotError(robotName: $name) }`,
           { name: robotName },
         );
-        push(2, { status: 'done', detail: 'clearRobotError accepted' });
-        console.log('[HardReset] Step 3 OK — clearRobotError accepted');
+        clearOk = true;
+        push(2, { status: 'running', detail: 'clearRobotError accepted — forcing DB override…' });
+        console.log('[HardReset] Step 3a OK — clearRobotError accepted');
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        push(2, { status: 'failed', detail: msg });
-        console.error(`[HardReset] Step 3 failed: ${msg}`);
+        // Non-fatal: robot may already be in a non-ERROR state.
+        push(2, { status: 'running', detail: `clearRobotError non-fatal (${msg}) — proceeding to DB override…` });
+        console.warn(`[HardReset] Step 3a non-fatal: ${msg}`);
       }
+
+      // 3b — Direct Supabase DB override.
+      // Runs unconditionally after 3a so desynchronised DB records are cleared
+      // even when the gateway mutation rejects or the robot is unreachable.
+      console.log(`[HardReset] Forcing database status to IDLE for robot: ${robotName}`);
+      const dbResults: string[] = [];
+
+      try {
+        // ── 1. wh_robots: mark robot idle ──────────────────────────────────
+        const { data: robotRow, error: robotErr } = await supabase
+          .from('wh_robots')
+          .update({ status: 'idle' })
+          .eq('name', robotName)
+          .select('id')
+          .single();
+
+        if (robotErr) {
+          // Row may not exist if the registry uses a different name casing —
+          // log and continue; do not abort the sequence.
+          console.warn(`[HardReset] DB override — wh_robots update failed: ${robotErr.message}`);
+          dbResults.push('robots:⚠');
+        } else {
+          console.log(`[HardReset] DB override — wh_robots.status → idle (id: ${robotRow?.id ?? 'n/a'})`);
+          dbResults.push('robots:✓');
+
+          if (robotRow?.id != null) {
+            // ── 2. wh_assignments: cancel robot's stale assignments ─────────
+            const { error: assignErr } = await supabase
+              .from('wh_assignments')
+              .update({ status: 'cancelled' })
+              .eq('robot_id', robotRow.id)
+              .in('status', ['in_progress', 'partially_completed']);
+
+            if (assignErr) {
+              console.warn(`[HardReset] DB override — wh_assignments update failed: ${assignErr.message}`);
+              dbResults.push('assignments:⚠');
+            } else {
+              console.log(`[HardReset] DB override — wh_assignments (in_progress|partially_completed) → cancelled`);
+              dbResults.push('assignments:✓');
+            }
+          }
+        }
+
+        // ── 3. wh_requests: cancel all in-progress requests ────────────────
+        // wh_requests has no robot_id/graph_id column; this is a best-effort
+        // breadth-first cancel that is safe in single-robot deployments.
+        const { error: reqErr } = await supabase
+          .from('wh_requests')
+          .update({ status: 'cancelled' })
+          .eq('status', 'in_progress');
+
+        if (reqErr) {
+          console.warn(`[HardReset] DB override — wh_requests update failed: ${reqErr.message}`);
+          dbResults.push('requests:⚠');
+        } else {
+          console.log('[HardReset] DB override — wh_requests (in_progress) → cancelled');
+          dbResults.push('requests:✓');
+        }
+      } catch (dbErr) {
+        const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+        console.warn(`[HardReset] DB override caught unexpected exception (non-fatal): ${msg}`);
+        dbResults.push('db:⚠');
+      }
+
+      // Summarise the combined outcome in the progress indicator.
+      push(2, {
+        status: clearOk ? 'done' : 'failed',
+        detail: `clearRobotError: ${clearOk ? 'ok' : 'failed'} · DB [${dbResults.join(' ')}]`,
+      });
+      console.log(`[HardReset] Step 3 complete — gateway: ${clearOk ? 'ok' : 'failed'}, DB override: [${dbResults.join(', ')}]`);
     }
 
     // ── Step 4: Verify IDLE Status ────────────────────────────────────────
