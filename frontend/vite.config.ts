@@ -4,6 +4,10 @@ import react from '@vitejs/plugin-react-swc'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
+// GATEWAY_URL — override via .env.local to point at a remote robot
+// e.g. GATEWAY_URL=http://10.61.6.87:8080
+const gatewayUrl = process.env.GATEWAY_URL ?? 'http://127.0.0.1:8080';
+
 export default defineConfig({
   plugins: [
     react(),
@@ -29,7 +33,7 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/fleet/, ''),
       },
       '/api/robot-gw': {
-        target: 'http://10.61.6.87:8080',
+        target: gatewayUrl,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/robot-gw/, ''),
       },

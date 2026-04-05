@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 import redis.asyncio as aioredis
 import strawberry
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure application-level loggers (route_oracle, vrp_client, etc.) emit INFO
 # to stdout.  Uvicorn's dictConfig leaves the root logger without a handler,
@@ -53,13 +54,6 @@ log = logging.getLogger(__name__)
 ACTION_SYNC_TIMEOUT_S = float(os.getenv("ACTION_SYNC_TIMEOUT_S", "300"))
 ACTION_SYNC_POLL_S = 1.0
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 @strawberry.enum
@@ -455,6 +449,18 @@ async def _dispatch_execute_path_and_wait(
     )
 
 
+@strawberry.input
+class RequestAliasInput:
+    pickup_node_alias: Optional[str] = None
+    delivery_node_alias: Optional[str] = None
+
+
+@strawberry.input
+class SendRequestOrderInput:
+    robot_name: str
+    request_alias: RequestAliasInput
+
+
 # ── GraphQL Schema ────────────────────────────────────────────────────────────
 @strawberry.type
 class Query:
@@ -672,19 +678,62 @@ class Mutation:
 
     @strawberry.mutation
     async def run_robot(self, robot_name: str) -> JobOrderResult:
-        return JobOrderResult(success=False, message="Not implemented in simulation mode")
+        channel = f"robot:{robot_name}:command"
+        payload = json.dumps({"op": "control", "topic": "/travel_command", "msg": {"command": "RESUME"}})
+        try:
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+            return JobOrderResult(success=True, message=f"RESUME dispatched to {robot_name}")
+        except Exception as exc:
+            return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def set_autorun(self, robot_name: str, autorun: bool) -> Robot:
+        channel = f"robot:{robot_name}:command"
+        payload = json.dumps({"op": "control", "topic": "/travel_command", "msg": {"command": "RESUME" if autorun else "PAUSE"}})
+        try:
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+        except Exception as exc:
+            log.warning(f"[setAutorun] Redis error for {robot_name}: {exc}")
         return await fetch_robot(robot_name)
 
     @strawberry.mutation
     async def cancel_current_job(self, robot_name: str) -> JobOrderResult:
-        return JobOrderResult(success=False, message="Not implemented in simulation mode")
+        channel = f"robot:{robot_name}:command"
+        payload = json.dumps({"op": "control", "topic": "/travel_command", "msg": {"command": "CANCEL"}})
+        try:
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+            return JobOrderResult(success=True, message=f"CANCEL dispatched to {robot_name}")
+        except Exception as exc:
+            return JobOrderResult(success=False, message=f"Redis error cancelling {robot_name}: {exc}")
 
     @strawberry.mutation
     async def clear_robot_error(self, robot_name: str) -> Robot:
+        channel = f"robot:{robot_name}:command"
+        payload = json.dumps({"op": "control", "topic": "/travel_command", "msg": {"command": "CLEAR_ERROR"}})
+        try:
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+        except Exception as exc:
+            log.warning(f"[clearRobotError] Redis publish failed for {robot_name}: {exc}")
         return await fetch_robot(robot_name)
+
+    @strawberry.mutation
+    async def send_request_order(self, request_order: SendRequestOrderInput) -> JobOrderResult:
+        """Dispatch a combined pickup-delivery request to a robot via Redis pub/sub."""
+        robot_name = request_order.robot_name
+        channel = f"robot:{robot_name}:command"
+        payload = json.dumps({
+            "op": "request",
+            "topic": "/request_command",
+            "msg": {
+                "pickup_alias": request_order.request_alias.pickup_node_alias,
+                "delivery_alias": request_order.request_alias.delivery_node_alias,
+            },
+        })
+        try:
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+            return JobOrderResult(success=True, message=f"Request order dispatched to {robot_name}")
+        except Exception as exc:
+            return JobOrderResult(success=False, message=f"Redis error dispatching request to {robot_name}: {exc}")
 
 
 @strawberry.type
@@ -775,6 +824,13 @@ graphql_router = GraphQLRouter(
 )
 
 app = FastAPI(title="Fleet Gateway", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(graphql_router, prefix="/graphql")
 
 

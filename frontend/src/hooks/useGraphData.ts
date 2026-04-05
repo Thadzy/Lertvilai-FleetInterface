@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { type Node, type Edge, MarkerType } from 'reactflow';
 import { supabase } from '../lib/supabaseClient';
 
@@ -55,7 +55,14 @@ export const useGraphData = (graphId: number) => {
   // 1. READ OPERATION (FETCH MAP) - Using Views
   // =========================================================
   const loadGraph = useCallback(async () => {
-    if (!graphId) return { nodes: [], edges: [], mapUrl: null, levels: [] as Level[] };
+    if (!graphId) return {
+      nodes: [],
+      edges: [],
+      mapUrl: null,
+      levels: [] as Level[],
+      nodeAliasMap: new Map<number, string>(),
+      cellMap: new Map<number, number>(),
+    };
 
     setLoading(true);
     try {
@@ -95,71 +102,92 @@ export const useGraphData = (graphId: number) => {
 
       const levels: Level[] = (levelData || []) as Level[];
 
-      // Build a lookup: shelf ID → shelf position (for cell offset)
       const viewNodes = nodeData as ViewNode[];
-      const shelfPositions = new Map<number, { x: number; y: number }>();
-      viewNodes.forEach(n => {
-        if (n.type === 'shelf') {
-          shelfPositions.set(n.id, { x: n.x, y: n.y });
-        }
-      });
 
-      // Count cells per shelf for offset calculation
-      const cellsByShelf = new Map<number, number>();
+      // Build a set of cell node IDs (for edge filtering)
+      const cellNodeIds = new Set(viewNodes.filter(n => n.type === 'cell').map(n => n.id));
+
+      // Parse cell alias e.g. "S1C2L3" → colNum=2, levelNum=3
+      const parseCellAlias = (alias: string | null) => {
+        const match = (alias || '').match(/S\d*C(\d+)L(\d+)/i);
+        return match
+          ? { colNum: parseInt(match[1], 10), levelNum: parseInt(match[2], 10) }
+          : { colNum: 0, levelNum: 0 };
+      };
+
+      // Group cells by shelf_id for embedding into shelf nodes
+      const cellsByShelfId = new Map<number, {
+        id: number; alias: string; levelAlias: string | null;
+        level_id: number | null; colNum: number; levelNum: number;
+      }[]>();
       viewNodes.forEach(n => {
         if (n.type === 'cell' && n.shelf_id !== null) {
-          cellsByShelf.set(n.shelf_id, (cellsByShelf.get(n.shelf_id) || 0) + 1);
+          const lvl = levels.find(l => l.id === n.level_id);
+          const { colNum, levelNum } = parseCellAlias(n.alias);
+          const entry = {
+            id: n.id,
+            alias: n.alias || `Cell_${n.id}`,
+            levelAlias: lvl ? lvl.alias : null,
+            level_id: n.level_id,
+            colNum,
+            levelNum,
+          };
+          const arr = cellsByShelfId.get(n.shelf_id) || [];
+          arr.push(entry);
+          cellsByShelfId.set(n.shelf_id, arr);
         }
       });
-
-      // Track cell index per shelf for positioning
-      const cellIndexByShelf = new Map<number, number>();
 
       // Transform Nodes
       const flowNodes: Node[] = viewNodes.map((n) => {
-        let posX = n.x * SCALE_FACTOR;
-        let posY = n.y * SCALE_FACTOR;
-        let draggable = true;
+        const posX = n.x * SCALE_FACTOR;
+        const posY = n.y * SCALE_FACTOR;
 
-        // Cells: position offset from parent shelf, not draggable
-        if (n.type === 'cell' && n.shelf_id !== null) {
-          const shelfPos = shelfPositions.get(n.shelf_id);
-          if (shelfPos) {
-            const cellIdx = cellIndexByShelf.get(n.shelf_id) || 0;
-            cellIndexByShelf.set(n.shelf_id, cellIdx + 1);
-            // Arrange cells in a small arc below their shelf
-            const angle = -Math.PI / 2 + (cellIdx * Math.PI / 4) - (((cellsByShelf.get(n.shelf_id) || 1) - 1) * Math.PI / 8);
-            const radius = 50; // px offset from shelf center
-            posX = shelfPos.x * SCALE_FACTOR + Math.cos(angle) * radius;
-            posY = shelfPos.y * SCALE_FACTOR + Math.sin(angle) * radius + 40;
-          }
-          draggable = false;
-        }
-
-        // Depot: not deletable
-        if (n.type === 'depot') {
-          draggable = true; // can move depot
-        }
-
-        // Find level alias for cells
-        let levelAlias: string | null = null;
-        if (n.type === 'cell' && n.level_id !== null) {
+        // Cell nodes: hidden (rendered inside ShelfNode grid) but kept in allNodes
+        // so the shelf panel can still read them for management.
+        if (n.type === 'cell') {
           const lvl = levels.find(l => l.id === n.level_id);
-          levelAlias = lvl ? lvl.alias : null;
+          return {
+            id: n.id.toString(),
+            type: 'waypointNode',
+            position: { x: posX, y: posY },
+            draggable: false,
+            hidden: true,
+            data: {
+              label: n.alias || `Node_${n.id}`,
+              type: n.type,
+              shelf_id: n.shelf_id,
+              level_id: n.level_id,
+              levelAlias: lvl ? lvl.alias : null,
+            },
+          };
+        }
+
+        // Shelf nodes: rendered as a grid via ShelfNode component
+        if (n.type === 'shelf') {
+          return {
+            id: n.id.toString(),
+            type: 'shelfNode',
+            position: { x: posX, y: posY },
+            draggable: true,
+            data: {
+              label: n.alias || `Node_${n.id}`,
+              type: n.type,
+              cells: cellsByShelfId.get(n.id) || [],
+              activeLevelId: null, // updated by GraphEditor level filter
+            },
+          };
         }
 
         return {
           id: n.id.toString(),
-          type: 'waypointNode', // custom node component name
+          type: 'waypointNode',
           position: { x: posX, y: posY },
-          draggable,
+          draggable: true,
           data: {
             label: n.alias || `Node_${n.id}`,
             type: n.type,
-            height: n.height,        // conveyor height
-            shelf_id: n.shelf_id,    // cell → parent shelf
-            level_id: n.level_id,    // cell → level
-            levelAlias,              // e.g. "L1" for display
+            height: n.height,
           },
         };
       });
@@ -195,22 +223,50 @@ export const useGraphData = (graphId: number) => {
         });
       }
 
-      // Transform Edges
-      const flowEdges: Edge[] = (edgeData as ViewEdge[]).map((e) => ({
-        id: `e${e.node_a_id}-${e.node_b_id}`,
-        source: e.node_a_id.toString(),
-        target: e.node_b_id.toString(),
-        type: 'straight',
-        animated: true,
-        style: { stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5,5' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
-      }));
+      // Build nodeAliasMap: wh_nodes.id → alias string
+      const nodeAliasMap = new Map<number, string>();
+      viewNodes.forEach(n => nodeAliasMap.set(n.id, n.alias || `Node_${n.id}`));
 
-      return { nodes: flowNodes, edges: flowEdges, mapUrl, levels };
+      // Build cellMap: wh_cells.id → wh_nodes.id (cell entity → graph node)
+      // Used by FleetController / WarehouseGraph to resolve task.cell_id → node position.
+      const cellNodeIdsArr = viewNodes.filter(n => n.type === 'cell').map(n => n.id);
+      const cellMap = new Map<number, number>();
+      if (cellNodeIdsArr.length > 0) {
+        const { data: cellData } = await supabase
+          .from('wh_cells')
+          .select('id, node_id')
+          .in('node_id', cellNodeIdsArr);
+        (cellData || []).forEach((c: { id: number; node_id: number }) =>
+          cellMap.set(c.id, c.node_id)
+        );
+      }
+
+      // Transform Edges — filter out edges that connect to cell nodes
+      // (cells are now rendered inside ShelfNode grid, not as standalone nodes)
+      const flowEdges: Edge[] = (edgeData as ViewEdge[])
+        .filter(e => !cellNodeIds.has(e.node_a_id) && !cellNodeIds.has(e.node_b_id))
+        .map((e) => ({
+          id: `e${e.node_a_id}-${e.node_b_id}`,
+          source: e.node_a_id.toString(),
+          target: e.node_b_id.toString(),
+          type: 'animatedEdge',
+          animated: false,
+          style: { stroke: '#38bdf8', strokeWidth: 2 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#38bdf8' },
+        }));
+
+      return { nodes: flowNodes, edges: flowEdges, mapUrl, levels, nodeAliasMap, cellMap };
 
     } catch (error: unknown) {
       console.error('[useGraphData] Error loading graph:', error);
-      return { nodes: [], edges: [], mapUrl: null, levels: [] as Level[] };
+      return {
+        nodes: [],
+        edges: [],
+        mapUrl: null,
+        levels: [] as Level[],
+        nodeAliasMap: new Map<number, string>(),
+        cellMap: new Map<number, number>(),
+      };
     } finally {
       setLoading(false);
     }
@@ -221,8 +277,7 @@ export const useGraphData = (graphId: number) => {
   // =========================================================
   const saveGraph = useCallback(async (nodes: Node[], edges: Edge[], currentMapUrl: string | null = null) => {
     if (!graphId) {
-      alert("Error: No graph ID loaded. Cannot save.");
-      return false;
+      throw new Error("No graph ID loaded. Cannot save.");
     }
     setLoading(true);
 
@@ -306,20 +361,20 @@ export const useGraphData = (graphId: number) => {
       console.log('[saveGraph] newNodes:', newNodes.length, '| existingNodes:', existingNodes.length);
 
       // -----------------------------------------------
-      // B. Delete removed nodes
+      // B. Delete removed nodes (parallel)
       // -----------------------------------------------
       console.log('[saveGraph] B. nodesToDelete:', nodesToDelete);
-      for (const nodeId of nodesToDelete) {
+      await Promise.all(nodesToDelete.map(async (nodeId) => {
         const { error } = await supabase.rpc('wh_delete_node', { p_node_id: nodeId });
         if (error) {
           console.error(`[saveGraph] B. Failed to delete node ${nodeId}:`, error.message);
         }
-      }
+      }));
 
       // -----------------------------------------------
-      // C. Update existing node positions
+      // C. Update existing node positions (parallel)
       // -----------------------------------------------
-      for (const { flowNode, dbId } of existingNodes) {
+      await Promise.all(existingNodes.map(async ({ flowNode, dbId }) => {
         const x = flowNode.position.x / SCALE_FACTOR;
         const y = flowNode.position.y / SCALE_FACTOR;
 
@@ -334,7 +389,7 @@ export const useGraphData = (graphId: number) => {
             console.error(`[useGraphData] Failed to update node ${dbId}:`, error.message);
           }
         }
-      }
+      }));
 
       // -----------------------------------------------
       // D. Create new nodes via RPC
@@ -411,14 +466,14 @@ export const useGraphData = (graphId: number) => {
 
       console.log('[saveGraph] E. currentEdges in DB:', currentEdges?.length ?? 0, '| edges in canvas:', edges.length);
       if (currentEdges) {
-        for (const edge of currentEdges) {
-          // Skip shelf→cell edges — they are auto-managed by wh_create_cell and must not be deleted
-          if (edge.node_a_type === 'cell' || edge.node_b_type === 'cell') continue;
-          const { error } = await supabase.rpc('wh_delete_edge', { p_edge_id: edge.edge_id });
-          if (error) {
-            console.error(`[saveGraph] E. Edge delete failed:`, error.message);
-          }
-        }
+        await Promise.all(
+          currentEdges
+            .filter(edge => edge.node_a_type !== 'cell' && edge.node_b_type !== 'cell')
+            .map(async (edge) => {
+              const { error } = await supabase.rpc('wh_delete_edge', { p_edge_id: edge.edge_id });
+              if (error) console.error(`[saveGraph] E. Edge delete failed:`, error.message);
+            })
+        );
       }
 
       for (const edge of edges) {
@@ -487,14 +542,11 @@ export const useGraphData = (graphId: number) => {
         console.log('[useGraphData] No map-background node or currentMapUrl found during save.', { hasNode: !!mapNode, hasUrl: !!currentMapUrl });
       }
 
-      alert("Map saved successfully!");
       return true;
 
     } catch (error: unknown) {
       console.error('[useGraphData] Error saving map:', error);
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      alert(`Save failed: ${msg}`);
-      return false;
+      throw error;
     } finally {
       setLoading(false);
     }
@@ -513,10 +565,8 @@ export const useGraphData = (graphId: number) => {
       if (error) throw error;
       return data as number;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[useGraphData] Failed to create level:', msg);
-      alert(`Failed to create level: ${msg}`);
-      return null;
+      console.error('[useGraphData] Failed to create level:', err);
+      throw err;
     }
   }, [graphId]);
 
@@ -529,10 +579,8 @@ export const useGraphData = (graphId: number) => {
       if (error) throw error;
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[useGraphData] Failed to delete level:', msg);
-      alert(`Failed to delete level: ${msg}`);
-      return false;
+      console.error('[useGraphData] Failed to delete level:', err);
+      throw err;
     }
   }, []);
 
@@ -550,10 +598,8 @@ export const useGraphData = (graphId: number) => {
       if (error) throw error;
       return data as number;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[useGraphData] Failed to create cell:', msg);
-      alert(`Failed to create cell: ${msg}`);
-      return null;
+      console.error('[useGraphData] Failed to create cell:', err);
+      throw err;
     }
   }, [graphId]);
 
@@ -563,12 +609,181 @@ export const useGraphData = (graphId: number) => {
       if (error) throw error;
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[useGraphData] Failed to delete cell:', msg);
-      alert(`Failed to delete cell: ${msg}`);
-      return false;
+      console.error('[useGraphData] Failed to delete cell:', err);
+      throw err;
     }
   }, []);
 
-  return { loadGraph, saveGraph, loading, createLevel, deleteLevel, createCell, deleteCell };
+  const setNodeAsDepot = useCallback(async (nodeId: number) => {
+    setLoading(true);
+    try {
+      // 1. Get Target Node details
+      const { data: targetNode, error: tErr } = await supabase
+        .from('wh_nodes_view')
+        .select('x, y, type, graph_id, alias')
+        .eq('id', nodeId)
+        .single();
+      if (tErr || !targetNode) throw new Error("Target node not found.");
+
+      if (targetNode.type === 'depot') return true;
+      if (targetNode.type !== 'waypoint' && targetNode.type !== 'conveyor') {
+        throw new Error(`Only waypoints and conveyors can be set as depot.`);
+      }
+
+      // 2. Get Depot details
+      const { data: depotNode, error: dErr } = await supabase
+        .from('wh_nodes_view')
+        .select('id, x, y')
+        .eq('graph_id', graphId)
+        .eq('type', 'depot')
+        .single();
+      if (dErr || !depotNode) throw new Error("Depot node not found.");
+
+      const depotId = depotNode.id;
+
+      // 3. Get neighbors of both nodes
+      const { data: targetEdges } = await supabase.rpc('wh_get_edges_by_node', { p_node_id: nodeId });
+      const { data: depotEdges } = await supabase.rpc('wh_get_edges_by_node', { p_node_id: depotId });
+
+      // 4. STEP A: Create a NEW waypoint where the depot currently is
+      const { data: newWpId, error: wpErr } = await supabase.rpc('wh_create_waypoint', {
+        p_graph_id: graphId,
+        p_x: depotNode.x,
+        p_y: depotNode.y,
+        p_alias: `W_from_depot_${Date.now().toString().slice(-4)}`
+      });
+      if (wpErr) throw wpErr;
+
+      // 5. STEP B: Transfer Depot's OLD edges to this NEW waypoint
+      if (depotEdges && (depotEdges as any[]).length > 0) {
+        await Promise.all((depotEdges as any[]).map(async (edge: any) => {
+          await supabase.rpc('wh_create_edge', {
+            p_graph_id: graphId,
+            p_node_a_id: newWpId,
+            p_node_b_id: edge.other_node_id
+          });
+          // Delete old depot edge
+          await supabase.rpc('wh_delete_edge', { p_edge_id: edge.edge_id });
+        }));
+      }
+
+      // 6. STEP C: Move the Depot to the target position
+      const { error: pErr } = await supabase.rpc('wh_update_node_position', {
+        p_node_id: depotId,
+        p_x: targetNode.x,
+        p_y: targetNode.y
+      });
+      if (pErr) throw pErr;
+
+      // 7. STEP D: Transfer Target's edges to the moved Depot
+      if (targetEdges && (targetEdges as any[]).length > 0) {
+        await Promise.all((targetEdges as any[]).map(async (edge: any) => {
+          if (edge.other_node_id === depotId) return;
+          await supabase.rpc('wh_create_edge', {
+            p_graph_id: graphId,
+            p_node_a_id: depotId,
+            p_node_b_id: edge.other_node_id
+          });
+        }));
+      }
+
+      // 8. STEP E: Delete the target node (it has been replaced by the Depot)
+      await supabase.rpc('wh_delete_node', { p_node_id: nodeId });
+
+      return true;
+    } catch (err: unknown) {
+      console.error('[useGraphData] Failed to swap depot:', err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [graphId]);
+
+  return { loadGraph, saveGraph, loading, createLevel, deleteLevel, createCell, deleteCell, setNodeAsDepot };
 };
+
+/**
+ * Hook for subscribing to real-time warehouse graph updates.
+ * @param graphId - The ID of the graph to monitor.
+ * @param onUpdate - Callback triggered when relevant data changes in Supabase.
+ */
+export const useGraphRealtime = (graphId: number, onUpdate: () => void) => {
+  useEffect(() => {
+    if (!graphId) return;
+
+    const channel = supabase
+      .channel(`wh-graph-${graphId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wh_nodes', filter: `graph_id=eq.${graphId}` },
+        () => onUpdate()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wh_edges', filter: `graph_id=eq.${graphId}` },
+        () => onUpdate()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wh_levels', filter: `graph_id=eq.${graphId}` },
+        () => onUpdate()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wh_tasks' }, // Occupancy updates
+        () => onUpdate()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [graphId, onUpdate]);
+};
+
+// =========================================================
+// STANDALONE: Cell Occupancy
+// =========================================================
+export async function loadCellOccupancy(graphId: number): Promise<Map<number, 'queuing' | 'active'>> {
+  try {
+    // Get cell node IDs for this graph
+    const { data: cellNodes } = await supabase
+      .from('wh_nodes_view')
+      .select('id')
+      .eq('graph_id', graphId)
+      .eq('type', 'cell');
+    if (!cellNodes || cellNodes.length === 0) return new Map();
+    const cellNodeIds = cellNodes.map((n: { id: number }) => n.id);
+
+    // Get wh_cells entries for these nodes (maps cell entity to node)
+    const { data: cellEntities } = await supabase
+      .from('wh_cells')
+      .select('id, node_id')
+      .in('node_id', cellNodeIds);
+    if (!cellEntities || cellEntities.length === 0) return new Map();
+
+    const cellEntityIds = cellEntities.map((c: { id: number; node_id: number }) => c.id);
+    const cellEntityToNode = new Map<number, number>(
+      cellEntities.map((c: { id: number; node_id: number }) => [c.id, c.node_id])
+    );
+
+    // Get active tasks
+    const { data: activeTasks } = await supabase
+      .from('wh_tasks')
+      .select('cell_id, status')
+      .in('cell_id', cellEntityIds)
+      .in('status', ['queuing', 'in_progress']);
+
+    const result = new Map<number, 'queuing' | 'active'>();
+    (activeTasks || []).forEach((task: { cell_id: number; status: string }) => {
+      const nodeId = cellEntityToNode.get(task.cell_id);
+      if (nodeId !== undefined) {
+        result.set(nodeId, task.status === 'in_progress' ? 'active' : 'queuing');
+      }
+    });
+    return result;
+  } catch (err) {
+    console.error('[loadCellOccupancy] Error:', err);
+    return new Map();
+  }
+}

@@ -1,13 +1,15 @@
-import React, { useCallback, useMemo, useEffect, useState } from 'react';
+import React, { useCallback, useMemo, useEffect, useState, useRef } from 'react';
 import ReactFlow, {
   Background,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   addEdge,
   type Connection,
   type Node,
+  type Edge,
   Panel,
   MarkerType,
   BackgroundVariant,
@@ -30,27 +32,36 @@ import {
   RefreshCw,
   XCircle,
   Link as LinkIcon,
-  Box, 
-  ArrowUpFromLine, 
-  CircleDot, 
-  Layers, 
-  Home, 
+  Box,
+  ArrowUpFromLine,
+  CircleDot,
+  Layers,
   Edit3,
   Plus,
   ChevronDown,
   Lock,
   Unlock,
+  Undo2,
+  Redo2,
+  Search,
+  SquareDashedMousePointer,
 } from 'lucide-react';
 
 
-import { useGraphData, type Level } from '../hooks/useGraphData';
+import { useGraphData, useGraphRealtime, loadCellOccupancy, type Level } from '../hooks/useGraphData';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeStore } from '../store/themeStore';
 import WaypointNode from './nodes/WaypointNode';
+import ShelfNode from './nodes/ShelfNode';
+import AnimatedEdge from './edges/AnimatedEdge';
 
 
 // --- CENTRALIZED NODE COMPONENTS ---
 
+/**
+ * MapNode — displays the warehouse floor-plan image as a ReactFlow node.
+ * Wraps NodeResizer so the operator can reposition/resize the background image.
+ */
 const MapNode = ({ data, selected }: NodeProps) => {
   return (
     <>
@@ -65,7 +76,70 @@ const MapNode = ({ data, selected }: NodeProps) => {
   );
 };
 
-const nodeTypes = { waypointNode: WaypointNode, mapNode: MapNode };
+/** Registered ReactFlow node types for the editor canvas. */
+const nodeTypes = { waypointNode: WaypointNode, shelfNode: ShelfNode, mapNode: MapNode };
+
+/** Registered ReactFlow edge types — animatedEdge is used for both base edges and path highlights. */
+const edgeTypes = { animatedEdge: AnimatedEdge };
+
+// ── Node Search Panel — must be rendered inside <ReactFlow> to use useReactFlow ──
+const NodeSearchPanel: React.FC<{
+  nodes: Node[];
+  onHighlight: (id: string | null) => void;
+}> = ({ nodes, onHighlight }) => {
+  const { setCenter } = useReactFlow();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const searchable = nodes.filter(n => n.id !== 'map-background' && !n.hidden && n.data?.label);
+  const results = query.trim().length > 1
+    ? searchable.filter(n => (n.data.label as string).toLowerCase().includes(query.toLowerCase())).slice(0, 8)
+    : [];
+
+  const goTo = (node: Node) => {
+    setCenter(node.position.x, node.position.y, { zoom: 1.5, duration: 600 });
+    onHighlight(node.id);
+    setTimeout(() => onHighlight(null), 2000);
+    setQuery('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <div className="flex items-center gap-1.5 bg-white/90 dark:bg-[#121214]/90 backdrop-blur border border-gray-200 dark:border-white/10 shadow-sm rounded-xl px-2.5 py-1.5">
+        <Search size={12} className="text-gray-400 shrink-0" />
+        <input
+          type="text"
+          placeholder="Search node..."
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          className="w-36 text-[11px] bg-transparent outline-none text-gray-700 dark:text-white placeholder-gray-400 font-mono"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute top-full mt-1 left-0 w-52 bg-white dark:bg-[#1a1a1e] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl py-1 z-50">
+          {results.map(n => (
+            <button
+              key={n.id}
+              onMouseDown={() => goTo(n)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left hover:bg-blue-50 dark:hover:bg-white/5 transition-colors"
+            >
+              <span className={`w-2 h-2 rounded-full shrink-0 ${
+                n.data.type === 'shelf' ? 'bg-cyan-500' :
+                n.data.type === 'depot' ? 'bg-red-500' :
+                n.data.type === 'conveyor' ? 'bg-amber-500' : 'bg-slate-400'
+              }`} />
+              <span className="font-mono font-bold text-gray-800 dark:text-white flex-1 truncate">{n.data.label}</span>
+              <span className="text-[9px] text-gray-400 uppercase">{n.data.type}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // --- MAIN COMPONENT PROPS ---
 interface GraphEditorProps {
@@ -76,17 +150,21 @@ interface GraphEditorProps {
 // --- MAIN COMPONENT ---
 const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] }) => {
   const { theme } = useThemeStore();
-  const [nodes, setNodes] = useNodesState([]);
-
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   // Editor State
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [mapLocked, setMapLocked] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [toolMode, setToolMode] = useState<'move' | 'connect'>('move');
+  const [toolMode, setToolMode] = useState<'move' | 'connect' | 'select'>('move');
+  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
 
-
+  // Undo / Redo history
+  const historyRef = useRef<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const historyIndexRef = useRef(-1);
+  const [, setHistoryVersion] = useState(0);
+  const bumpHistoryVersion = useCallback(() => setHistoryVersion(v => v + 1), []);
 
   // Level State
   const [levels, setLevels] = useState<Level[]>([]);
@@ -99,14 +177,13 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
   const [showShelfPanel, setShowShelfPanel] = useState(false);
   const [shelfCells, setShelfCells] = useState<{ id: number; alias: string; levelAlias: string | null; level_id: number | null }[]>([]);
   const [newCellLevel, setNewCellLevel] = useState('');
+  const [newCellCol, setNewCellCol] = useState('1');
 
   // Toast Notification State
   const [toasts, setToasts] = useState<{ id: number; msg: string; type: 'success' | 'error' | 'info' }[]>([]);
 
   /**
    * Display a temporary toast notification.
-   * @param msg  - Human-readable message to display.
-   * @param type - Visual variant: 'success' | 'error' | 'info'.
    */
   const showToast = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now();
@@ -114,11 +191,115 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);
 
-  // All nodes (before level filter)
-  const [allNodes, setAllNodes] = useState<Node[]>([]);
-
   // Custom Hook for Supabase Data
-  const { loadGraph, saveGraph, loading, createLevel, deleteLevel, createCell, deleteCell } = useGraphData(graphId);
+  const { loadGraph, saveGraph, loading, createLevel, deleteLevel, createCell, deleteCell, setNodeAsDepot } = useGraphData(graphId);
+
+  // ── History helpers (undo/redo) ────────────────────────────────────────────
+  
+  /**
+   * Capture the current state and push to history stack.
+   * Clears any 'redo' forward history when a new action is performed.
+   */
+  const pushHistory = useCallback(() => {
+    historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1);
+    historyRef.current.push({ 
+      nodes: JSON.parse(JSON.stringify(nodes)), 
+      edges: JSON.parse(JSON.stringify(edges)) 
+    });
+    historyIndexRef.current = historyRef.current.length - 1;
+    bumpHistoryVersion();
+  }, [nodes, edges, bumpHistoryVersion]);
+
+  const undo = useCallback(() => {
+    if (historyIndexRef.current < 0) return;
+    
+    const snap = historyRef.current[historyIndexRef.current];
+    if (!snap) return;
+
+    // Capture state to redo back to (if we are at the end)
+    if (historyIndexRef.current === historyRef.current.length - 1) {
+      // Optional: push current state as latest
+    }
+
+    historyIndexRef.current--;
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    bumpHistoryVersion();
+  }, [setNodes, setEdges, bumpHistoryVersion]);
+
+  const redo = useCallback(() => {
+    if (historyIndexRef.current >= historyRef.current.length - 2) return;
+    
+    historyIndexRef.current++;
+    const snap = historyRef.current[historyIndexRef.current + 1];
+    if (!snap) return;
+
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    bumpHistoryVersion();
+  }, [setNodes, setEdges, bumpHistoryVersion]);
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = (navigator as any).userAgentData?.platform?.includes('Mac') ?? navigator.platform.includes('Mac');
+      const ctrl = isMac ? e.metaKey : e.ctrlKey;
+      if (!ctrl) return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      if ((e.key === 'z' && e.shiftKey) || e.key === 'y') { e.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
+
+  // ── Highlight search effect ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!highlightedNodeId) return;
+    setNodes(prev => prev.map(n => n.id === highlightedNodeId
+      ? { ...n, data: { ...n.data, highlighted: true } }
+      : n.data?.highlighted ? { ...n, data: { ...n.data, highlighted: false } } : n
+    ));
+  }, [highlightedNodeId, setNodes]);
+
+  // ── Cell occupancy polling ─────────────────────────────────────────────────
+  const fetchOccupancy = useCallback(async () => {
+    const occ = await loadCellOccupancy(graphId);
+    if (occ.size === 0) return;
+    setNodes(prev => prev.map(n => {
+      if (n.data?.type !== 'shelf') return n;
+      const cells = ((n.data.cells as any[]) || []).map((cell: any) => ({
+        ...cell,
+        occupancyStatus: occ.get(cell.id) || 'empty',
+      }));
+      return { ...n, data: { ...n.data, cells } };
+    }));
+  }, [graphId, setNodes]);
+
+  useEffect(() => {
+    fetchOccupancy();
+    const occId = setInterval(fetchOccupancy, 10000); // Increased interval since we have realtime now
+    return () => clearInterval(occId);
+  }, [fetchOccupancy]);
+
+  // ── Realtime Subscription ──
+  const handleDataUpdate = useCallback(() => {
+    console.log('[GraphEditor] Real-time update detected, reloading...');
+    // We only reload graph structure (nodes/edges/levels)
+    // Occupancy is still polled or we could add it to realtime too
+    loadGraph().then(({ nodes: dbNodes, edges: dbEdges, levels: dbLevels, mapUrl }) => {
+      // Preserve local-only data if needed, but usually we want to sync
+      setNodes(dbNodes.map(n => {
+        if (n.id === 'map-background') return { ...n, draggable: !mapLocked, selectable: !mapLocked };
+        if (n.data?.type === 'shelf') return { ...n, data: { ...n.data, activeLevelId: selectedLevel } };
+        return n;
+      }));
+      setEdges(dbEdges);
+      setLevels(dbLevels);
+      setBgUrl(mapUrl || null);
+    });
+  }, [loadGraph, mapLocked, selectedLevel, setNodes, setEdges]);
+
+  useGraphRealtime(graphId, handleDataUpdate);
 
   // Helper: Get currently selected node
   const selectedNode = useMemo(() => nodes.find((n) => n.selected), [nodes]);
@@ -133,15 +314,6 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
         return node;
       })
     );
-    // Also update allNodes
-    setAllNodes((nds) =>
-      nds.map((node) => {
-        if (node.id === selectedNode?.id) {
-          return { ...node, data: { ...node.data, [key]: value } };
-        }
-        return node;
-      })
-    );
   };
 
   // --- 1. LOAD DATA ---
@@ -150,9 +322,10 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
       const { nodes: dbNodes, edges: dbEdges, mapUrl, levels: dbLevels } = await loadGraph();
 
       // Apply current lock state to the incoming map background node
-      const preparedNodes = dbNodes.map(n => n.id === 'map-background' ? { ...n, draggable: !mapLocked, selectable: !mapLocked } : n);
+      const preparedNodes = dbNodes.map(n => 
+        n.id === 'map-background' ? { ...n, draggable: !mapLocked, selectable: !mapLocked } : n
+      );
 
-      setAllNodes(preparedNodes);
       setNodes(preparedNodes);
       setEdges(dbEdges);
       setBgUrl(mapUrl || null);
@@ -163,29 +336,32 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphId]);
 
-  // --- LEVEL FILTER EFFECT ---
-  useEffect(() => {
-    if (selectedLevel === null) {
-      // Show ALL
-      setNodes(allNodes.map(n => n.id === 'map-background' ? { ...n, draggable: !mapLocked, selectable: !mapLocked } : n));
-    } else {
-      // Filter: show non-cell nodes + cells matching selected level
-      setNodes(
-        allNodes.filter(n => {
-          if (n.id === 'map-background') return true;
-          if (n.data?.type !== 'cell') return true;
-          return n.data?.level_id === selectedLevel;
-        }).map(n => n.id === 'map-background' ? { ...n, draggable: !mapLocked, selectable: !mapLocked } : n)
-      );
-    }
-  }, [selectedLevel, allNodes, mapLocked]);
+  // ── Handle Level Selection ──
+  const handleLevelSelect = (levelId: number | null) => {
+    setSelectedLevel(levelId);
+    setNodes(nds => nds.map(n => {
+      if (n.data?.type === 'shelf') {
+        return { ...n, data: { ...n.data, activeLevelId: levelId } };
+      }
+      return n;
+    }));
+  };
+
+  // ── Handle Map Lock Toggle ──
+  const handleMapLockToggle = () => {
+    const nextLocked = !mapLocked;
+    setMapLocked(nextLocked);
+    setNodes(nds => nds.map(n => 
+      n.id === 'map-background' ? { ...n, draggable: !nextLocked, selectable: !nextLocked } : n
+    ));
+  };
 
   // --- SHELF DETAIL: populate cells when a shelf is selected ---
   useEffect(() => {
     if (selectedNode && selectedNode.data?.type === 'shelf') {
       const shelfId = Number(selectedNode.id);
       if (!isNaN(shelfId)) {
-        const cells = allNodes
+        const cells = nodes
           .filter(n => n.data?.type === 'cell' && n.data?.shelf_id === shelfId)
           .map(n => ({
             id: Number(n.id),
@@ -199,84 +375,74 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     } else {
       setShowShelfPanel(false);
     }
-  }, [selectedNode, allNodes]);
+  }, [selectedNode, nodes]);
 
   // --- 2. PATH VISUALIZATION EFFECT ---
   useEffect(() => {
     if (!visualizedPath || visualizedPath.length < 2) {
-      setEdges((eds) =>
-        eds.map((e) => ({
+      setEdges((eds) => {
+        if (!eds.some(e => (e.style as any)?.stroke === '#22c55e')) return eds;
+        return eds.map((e) => ({
           ...e,
-          animated: true,
-          style: { stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5,5' },
-          zIndex: 0
-        }))
-      );
+          animated: false,
+          style: { stroke: '#38bdf8', strokeWidth: 2 },
+          zIndex: 0,
+        }));
+      });
       return;
     }
 
     const aliasToIdMap = new Map<string, string>();
     nodes.forEach(node => {
-      if (node.data?.label) {
-        aliasToIdMap.set(node.data.label, node.id);
-      }
+      if (node.data?.label) aliasToIdMap.set(node.data.label, node.id);
     });
 
-    const pathEdgeIds = new Set<string>();
-
-    for (let i = 0; i < visualizedPath.length - 1; i++) {
-      const sourceAlias = visualizedPath[i];
-      const targetAlias = visualizedPath[i + 1];
-      const sourceId = aliasToIdMap.get(sourceAlias);
-      const targetId = aliasToIdMap.get(targetAlias);
-      if (sourceId && targetId) {
-        const edge = edges.find(e =>
-          (e.source === sourceId && e.target === targetId) ||
-          (e.source === targetId && e.target === sourceId)
-        );
-        if (edge) pathEdgeIds.add(edge.id);
-      }
-    }
-
-    setEdges((eds) =>
-      eds.map((e) => {
-        if (pathEdgeIds.has(e.id)) {
-          return { ...e, animated: true, style: { stroke: '#22c55e', strokeWidth: 4 }, zIndex: 10 };
-        } else {
-          return { ...e, animated: true, style: { stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '5,5', opacity: 0.5 }, zIndex: 0 };
+    setEdges((eds) => {
+      const pathEdgeIds = new Set<string>();
+      for (let i = 0; i < visualizedPath.length - 1; i++) {
+        const sourceId = aliasToIdMap.get(visualizedPath[i]);
+        const targetId = aliasToIdMap.get(visualizedPath[i + 1]);
+        if (sourceId && targetId) {
+          const edge = eds.find(e =>
+            (e.source === sourceId && e.target === targetId) ||
+            (e.source === targetId && e.target === sourceId)
+          );
+          if (edge) pathEdgeIds.add(edge.id);
         }
-      })
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(visualizedPath), nodes.length]);
+      }
+      return eds.map((e) =>
+        pathEdgeIds.has(e.id)
+          ? { ...e, animated: true, style: { stroke: '#22c55e', strokeWidth: 4 }, zIndex: 10 }
+          : { ...e, animated: true, style: { stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '5,5', opacity: 0.5 }, zIndex: 0 }
+      );
+    });
+  }, [visualizedPath, nodes, setEdges]);
 
 
   // --- 3. HANDLERS ---
-  const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes((nds) => applyNodeChanges(changes, nds));
-    setAllNodes((nds) => applyNodeChanges(changes, nds));
-  }, [setNodes, setAllNodes]);
-
   const onConnect = useCallback(
     (params: Connection) => {
+      pushHistory();
       const newEdge = {
         ...params,
-        type: 'straight',
-        animated: true,
-        style: { stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5,5' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
+        type: 'animatedEdge',
+        animated: false,
+        style: { stroke: '#38bdf8', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#38bdf8' },
       };
       setEdges((eds) => addEdge(newEdge, eds));
     },
-    [setEdges]
+    [setEdges, pushHistory]
   );
 
   const addNode = (type: 'waypoint' | 'conveyor' | 'shelf' = 'waypoint') => {
+    pushHistory();
     const id = `temp_${Date.now()}`;
     const prefixMap = { waypoint: 'W', conveyor: 'C', shelf: 'S' };
+    const rfType = type === 'shelf' ? 'shelfNode' : 'waypointNode';
     const newNode: Node = {
       id,
-      type: 'waypointNode',
+      type: rfType,
       position: {
         x: 100 + Math.random() * 200,
         y: 100 + Math.random() * 200,
@@ -285,49 +451,44 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
         label: `${prefixMap[type]}_${nodes.filter(n => n.data?.type === type).length + 1}`,
         type,
         height: type === 'conveyor' ? 1.0 : undefined,
+        ...(type === 'shelf' ? { cells: [], activeLevelId: selectedLevel } : {}),
       },
     };
     setNodes((nds) => nds.concat(newNode));
-    setAllNodes((nds) => nds.concat(newNode));
     setToolMode('move');
   };
 
   const handleDelete = useCallback(() => {
-    // Prevent deleting depot and cell nodes from canvas
+    pushHistory();
     setNodes((nds) => nds.filter((node) => !node.selected || node.data?.type === 'depot' || node.data?.type === 'cell'));
-    setAllNodes((nds) => nds.filter((node) => !node.selected || node.data?.type === 'depot' || node.data?.type === 'cell'));
     setEdges((eds) => eds.filter((edge) => !edge.selected));
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, pushHistory]);
 
-  // Upload Map Image
+  const onNodeDragStart = useCallback(() => {
+    pushHistory();
+  }, [pushHistory]);
+
+  const onNodeDragStop = useCallback(() => {
+    // History was already pushed at start; drag stop is usually implicit update
+  }, []);
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     try {
       setUploading(true);
       const fileName = `map_${graphId}_${Date.now()}_${file.name.replace(/\s/g, '')}`;
-
       const { error: uploadError } = await supabase.storage.from('maps').upload(fileName, file);
       if (uploadError) throw uploadError;
-
       const { data: { publicUrl } } = supabase.storage.from('maps').getPublicUrl(fileName);
-
-      // Try direct table update (may fail on local schema with SECURITY DEFINER)
-      const { error: updateError } = await supabase.from('wh_graphs').update({ map_url: publicUrl }).eq('id', graphId);
-      if (updateError) {
-        console.warn('[GraphEditor] Could not update map_url directly:', updateError.message);
-      }
-
+      await supabase.from('wh_graphs').update({ map_url: publicUrl }).eq('id', graphId);
       setBgUrl(publicUrl);
       showToast('Map uploaded successfully!', 'success');
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      console.error(error);
-      showToast(`Upload failed: ${msg}`, 'error');
+      showToast(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setUploading(false);
-      if (event.target) event.target.value = ''; // Reset input to allow re-uploading the same file
+      if (event.target) event.target.value = '';
     }
   };
 
@@ -335,11 +496,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     if (!window.confirm("Are you sure you want to remove the background map?")) return;
     try {
       setUploading(true);
-      // Try direct table update (may fail on local schema with SECURITY DEFINER)
-      const { error } = await supabase.from('wh_graphs').update({ map_url: null }).eq('id', graphId);
-      if (error) {
-        console.warn('[GraphEditor] Could not remove map_url directly:', error.message);
-      }
+      await supabase.from('wh_graphs').update({ map_url: null }).eq('id', graphId);
       setBgUrl(null);
     } catch {
       showToast('Failed to remove background image', 'error');
@@ -348,7 +505,6 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     }
   };
 
-  // Level Management
   const handleCreateLevel = async () => {
     if (!newLevelAlias.trim()) return;
     try {
@@ -356,9 +512,8 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
       if (result) {
         setNewLevelAlias('');
         setNewLevelHeight('0');
-        const { levels: updatedLevels } = await loadGraph();
-        setLevels(updatedLevels);
         showToast(`Level "${newLevelAlias.trim()}" created`, 'success');
+        handleDataUpdate();
       }
     } catch (err) {
       showToast(`Failed to create level: ${err instanceof Error ? err.message : String(err)}`, 'error');
@@ -370,31 +525,15 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     try {
       const success = await deleteLevel(levelId);
       if (success) {
-        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-        setAllNodes(dbNodes);
-        setNodes(dbNodes);
-        setEdges(dbEdges);
-        setLevels(updatedLevels);
-        if (selectedLevel === levelId) setSelectedLevel(null);
         showToast('Level deleted', 'success');
+        handleDataUpdate();
+        if (selectedLevel === levelId) setSelectedLevel(null);
       }
     } catch (err) {
       showToast(`Failed to delete level: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
-  // Cell Management (via Shelf)
-  /**
-   * Create a new cell on the selected shelf with an auto-generated alias in the
-   * canonical format `S{shelf_number}C{cell_number}L{level_number}`.
-   *
-   * - `shelf_number` — numeric suffix extracted from the shelf alias (e.g. "S3" → 3).
-   * - `cell_number`  — next sequential index based on cells already on this shelf.
-   * - `level_number` — numeric suffix extracted from the level alias (e.g. "L2" → 2).
-   *
-   * This enforces a consistent naming convention across the warehouse graph and
-   * eliminates free-form input that could produce invalid or duplicate aliases.
-   */
   const handleCreateCell = async () => {
     if (!selectedNode || selectedNode.data?.type !== 'shelf') return;
     if (!newCellLevel) return;
@@ -403,29 +542,20 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     const levelObj = levels.find(l => l.id === parseInt(newCellLevel));
     if (!levelObj) return;
 
-    // Extract numeric component from shelf alias (e.g. "S3" → 3, "Shelf2" → 2).
     const shelfNumMatch = shelfAlias.match(/(\d+)/);
     const shelfNum = shelfNumMatch ? shelfNumMatch[1] : shelfAlias;
-
-    // Next cell index: count existing cells on this shelf + 1.
-    const cellNum = shelfCells.length + 1;
-
-    // Extract numeric component from level alias (e.g. "L2" → 2, "Level3" → 3).
+    const cellNum = parseInt(newCellCol) || 1;
     const levelNumMatch = levelObj.alias.match(/(\d+)/);
     const levelNum = levelNumMatch ? levelNumMatch[1] : levelObj.alias;
-
     const cellAlias = `S${shelfNum}C${cellNum}L${levelNum}`;
 
     try {
       const result = await createCell(shelfAlias, levelObj.alias, cellAlias);
       if (result) {
         setNewCellLevel('');
-        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-        setAllNodes(dbNodes);
-        setNodes(dbNodes);
-        setEdges(dbEdges);
-        setLevels(updatedLevels);
+        setNewCellCol('1');
         showToast(`Cell "${cellAlias}" created`, 'success');
+        handleDataUpdate();
       }
     } catch (err) {
       showToast(`Failed to create cell: ${err instanceof Error ? err.message : String(err)}`, 'error');
@@ -437,23 +567,17 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     try {
       const success = await deleteCell(cellId);
       if (success) {
-        const { nodes: dbNodes, edges: dbEdges, levels: updatedLevels } = await loadGraph();
-        setAllNodes(dbNodes);
-        setNodes(dbNodes);
-        setEdges(dbEdges);
-        setLevels(updatedLevels);
         showToast('Cell deleted', 'success');
+        handleDataUpdate();
       }
     } catch (err) {
       showToast(`Failed to delete cell: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
-  // Reload helper
-  const reloadGraph = async () => {
+  const reloadGraphStructure = async () => {
     try {
       const { nodes: dbNodes, edges: dbEdges, mapUrl, levels: dbLevels } = await loadGraph();
-      setAllNodes(dbNodes);
       setNodes(dbNodes);
       setEdges(dbEdges);
       setBgUrl(mapUrl || null);
@@ -463,8 +587,20 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
     }
   };
 
-  // --- Node type label for "add" dropdown ---
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showAddMenu) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setShowAddMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [showAddMenu]);
+
 
   return (
     <div className="w-full h-full bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white relative font-sans transition-colors">
@@ -473,14 +609,17 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodesChange={handleNodesChange}
+        edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDragStop={onNodeDragStop}
         fitView
         minZoom={0.1}
         maxZoom={4}
-        defaultEdgeOptions={{ 
-          type: 'straight',
+        defaultEdgeOptions={{
+          type: 'animatedEdge',
           style: { stroke: theme === 'dark' ? '#3b82f6' : '#2563eb', strokeWidth: 3 },
           markerEnd: { type: MarkerType.ArrowClosed, color: theme === 'dark' ? '#3b82f6' : '#2563eb' }
         }}
@@ -488,18 +627,24 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
         connectionLineType={ConnectionLineType.Straight}
         nodesDraggable={toolMode === 'move'}
         nodesConnectable={toolMode === 'connect'}
-        panOnDrag={toolMode !== 'connect'}
+        panOnDrag={toolMode === 'move'}
+        selectionOnDrag={toolMode === 'select'}
+        multiSelectionKeyCode="Shift"
         onPaneClick={() => setNodes((nds) => nds.map((n) => ({ ...n, selected: false })))}
       >
 
         <Background color={theme === 'dark' ? '#1e293b' : '#cbd5e1'} gap={20} size={1} variant={BackgroundVariant.Dots} />
 
+        {/* Node Search Panel */}
+        <Panel position="top-right" className="m-4">
+          <NodeSearchPanel nodes={nodes} onHighlight={setHighlightedNodeId} />
+        </Panel>
+
 
         {/* --- HEADER INFO --- */}
         <Panel position="top-left" className="m-4">
-          <div className="bg-white/90 dark:bg-[#121214]/90 dark:bg-[#121214]/90 backdrop-blur border border-gray-200 dark:border-white/10 shadow-sm px-4 py-3 rounded-xl flex items-center gap-3">
+          <div className="bg-white/90 dark:bg-[#121214]/90 backdrop-blur border border-gray-200 dark:border-white/10 shadow-sm px-4 py-3 rounded-xl flex items-center gap-3">
             <div className="p-2 bg-gray-100 dark:bg-white/5 rounded-lg text-blue-600 dark:text-blue-400">
-
               <LayoutGrid size={20} />
             </div>
             <div>
@@ -534,7 +679,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
 
             <div className="flex gap-1 flex-wrap">
               <button
-                onClick={() => setSelectedLevel(null)}
+                onClick={() => handleLevelSelect(null)}
                 className={`px-2.5 py-1 text-[10px] font-bold rounded-full transition-all ${selectedLevel === null
                     ? 'bg-slate-800 text-white shadow-md'
                     : 'bg-gray-100 dark:bg-white/5 text-slate-500 hover:bg-slate-200'
@@ -545,7 +690,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
               {levels.map((level) => (
                 <button
                   key={level.id}
-                  onClick={() => setSelectedLevel(level.id)}
+                  onClick={() => handleLevelSelect(level.id)}
                   className={`px-2.5 py-1 text-[10px] font-bold rounded-full transition-all ${selectedLevel === level.id
                       ? 'bg-purple-600 text-white shadow-md'
                       : 'bg-purple-50 text-purple-600 hover:bg-purple-100'
@@ -568,14 +713,14 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                     placeholder="Alias (L1)"
                     value={newLevelAlias}
                     onChange={(e) => setNewLevelAlias(e.target.value)}
-                    className="flex-1 text-[10px] px-2 py-1 border border-slate-300 rounded focus:outline-none focus:border-blue-500"
+                    className="flex-1 text-[10px] px-2 py-1 border border-slate-300 dark:border-white/10 rounded bg-white dark:bg-[#09090b] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                   />
                   <input
                     type="number"
                     placeholder="Height"
                     value={newLevelHeight}
                     onChange={(e) => setNewLevelHeight(e.target.value)}
-                    className="w-16 text-[10px] px-2 py-1 border border-slate-300 rounded focus:outline-none focus:border-blue-500"
+                    className="w-16 text-[10px] px-2 py-1 border border-slate-300 dark:border-white/10 rounded bg-white dark:bg-[#09090b] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                     step="0.1"
                     min="0"
                   />
@@ -633,7 +778,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                   <select
                     value={selectedNode.data.type || 'waypoint'}
                     onChange={(e) => updateSelectedNode('type', e.target.value)}
-                    className="text-xs border border-slate-300 rounded px-2 py-1 focus:outline-none focus:border-blue-500 bg-white"
+                    className="text-xs border border-slate-300 rounded px-2 py-1 focus:outline-none focus:border-blue-500 bg-white dark:bg-[#121214]"
                   >
                     <option value="waypoint">Waypoint</option>
                     <option value="conveyor">Conveyor</option>
@@ -642,16 +787,40 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                 </div>
               )}
 
+              {/* Set as Depot Button */}
+              {selectedNode && !isNaN(Number(selectedNode.id)) && (selectedNode.data.type === 'waypoint' || selectedNode.data.type === 'conveyor') && (
+                <button
+                  onClick={async () => {
+                    const nodeId = Number(selectedNode.id);
+                    if (window.confirm(`Set "${selectedNode.data.label}" as the depot? The current depot will move here and "${selectedNode.data.label}" will be merged into it.`)) {
+                      try {
+                        const success = await setNodeAsDepot(nodeId);
+                        if (success) {
+                          showToast('Depot moved successfully', 'success');
+                          await reloadGraphStructure();
+                        }
+                      } catch (err: unknown) {
+                        showToast(`Failed to set depot: ${err instanceof Error ? err.message : String(err)}`, 'error');
+                      }
+                    }
+                  }}
+                  className="mt-1 flex items-center justify-center gap-2 px-3 py-1.5 bg-red-600/90 text-white text-[10px] font-bold rounded hover:bg-red-700 shadow-sm transition-all active:translate-y-0.5"
+                >
+                  <CircleDot size={12} />
+                  SET AS DEPOT
+                </button>
+              )}
+
               {/* Depot indicator */}
               {selectedNode.data.type === 'depot' && (
-                <div className="text-[10px] text-red-500 font-bold bg-red-50 px-2 py-1 rounded">
+                <div className="text-[10px] text-red-500 font-bold bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded">
                   ⚠ Depot node — cannot be deleted or renamed
                 </div>
               )}
 
               {/* Cell indicator */}
               {selectedNode.data.type === 'cell' && (
-                <div className="text-[10px] text-purple-500 font-bold bg-purple-50 px-2 py-1 rounded">
+                <div className="text-[10px] text-purple-500 font-bold bg-purple-50 dark:bg-purple-900/20 px-2 py-1 rounded">
                   Cell — managed through Shelf panel
                 </div>
               )}
@@ -687,7 +856,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                     <p className="text-[10px] text-gray-500 dark:text-gray-400 italic mb-2">No cells yet</p>
                   )}
                   {shelfCells.map((cell) => (
-                    <div key={cell.id} className="flex items-center justify-between py-1 text-[10px] border-b border-slate-50">
+                    <div key={cell.id} className="flex items-center justify-between py-1 text-[10px] border-b border-slate-50 dark:border-white/5">
                       <span className="font-mono font-bold text-blue-600 dark:text-blue-400">{cell.alias}</span>
                       <span className="text-purple-500 font-bold">{cell.levelAlias || '?'}</span>
                       <button
@@ -699,10 +868,18 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                     </div>
                   ))}
 
-                  {/* Add Cell Form — alias is auto-generated as S{N}C{N}L{N} */}
+                  {/* Add Cell Form */}
                   {levels.length > 0 ? (
-                    <div className="mt-2">
+                    <div className="mt-2 flex flex-col gap-2">
                       <div className="flex gap-1">
+                        <input
+                          type="number"
+                          placeholder="Col (C)"
+                          value={newCellCol}
+                          onChange={(e) => setNewCellCol(e.target.value)}
+                          min="1"
+                          className="w-16 text-[10px] px-2 py-1 border border-slate-300 dark:border-white/10 rounded bg-white dark:bg-[#09090b] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        />
                         <select
                           value={newCellLevel}
                           onChange={(e) => setNewCellLevel(e.target.value)}
@@ -727,9 +904,9 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                         const shelfAlias: string = selectedNode?.data?.label ?? '';
                         const shelfNum = (shelfAlias.match(/(\d+)/) ?? [, shelfAlias])[1];
                         const levelNum = levelObj ? (levelObj.alias.match(/(\d+)/) ?? [, levelObj.alias])[1] : '?';
-                        const cellNum = shelfCells.length + 1;
+                        const cellNum = parseInt(newCellCol) || '?';
                         return (
-                          <p className="text-[9px] text-cyan-600 font-mono mt-1">
+                          <p className="text-[9px] text-cyan-600 font-mono mt-0.5">
                             Will create: <strong>S{shelfNum}C{cellNum}L{levelNum}</strong>
                           </p>
                         );
@@ -753,7 +930,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                   <button onClick={handleRemoveBackground} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Remove Map">
                     <XCircle size={18} />
                   </button>
-                  <button onClick={() => setMapLocked(!mapLocked)} className={`p-2 rounded-lg transition-all ${!mapLocked ? 'bg-amber-100 text-amber-600 shadow-sm' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'}`} title={mapLocked ? "Unlock Map for Editing" : "Unlock Map"}>
+                  <button onClick={handleMapLockToggle} className={`p-2 rounded-lg transition-all ${!mapLocked ? 'bg-amber-100 text-amber-600 shadow-sm' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'}`} title={mapLocked ? "Unlock Map for Editing" : "Unlock Map"}>
                     {mapLocked ? <Lock size={18} /> : <Unlock size={18} />}
                   </button>
                 </>
@@ -787,8 +964,39 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                 <LinkIcon size={18} />
               </button>
 
+              <button
+                onClick={() => setToolMode('select')}
+                className={`p-2 rounded-lg transition-all ${toolMode === 'select'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'
+                  }`}
+                title="Select Tool — drag to multi-select (Shift+click also works)"
+              >
+                <SquareDashedMousePointer size={18} />
+              </button>
+
+              <div className="w-px h-5 bg-gray-200 dark:bg-white/10 self-center mx-0.5" />
+
+              <button
+                onClick={undo}
+                disabled={historyIndexRef.current < 0}
+                className="p-2 rounded-lg transition-all text-slate-500 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo2 size={18} />
+              </button>
+
+              <button
+                onClick={redo}
+                disabled={historyIndexRef.current >= historyRef.current.length - 2}
+                className="p-2 rounded-lg transition-all text-slate-500 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Redo (Ctrl+Shift+Z)"
+              >
+                <Redo2 size={18} />
+              </button>
+
               {/* Add Node — dropdown */}
-              <div className="relative">
+              <div className="relative" ref={addMenuRef}>
                 <button
                   onClick={() => setShowAddMenu(!showAddMenu)}
                   className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all flex items-center gap-0.5"
@@ -801,19 +1009,19 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                   <div className="absolute top-full right-0 mt-1 bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/10 rounded-lg shadow-xl py-1 z-50 w-36">
                     <button
                       onClick={() => { addNode('waypoint'); setShowAddMenu(false); }}
-                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors flex items-center gap-2"
+                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-100 dark:hover:bg-white/10 text-gray-900 dark:text-white transition-colors flex items-center gap-2"
                     >
                       <CircleDot size={12} className="text-blue-600 dark:text-blue-400" /> Waypoint
                     </button>
                     <button
                       onClick={() => { addNode('conveyor'); setShowAddMenu(false); }}
-                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors flex items-center gap-2"
+                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-100 dark:hover:bg-white/10 text-gray-900 dark:text-white transition-colors flex items-center gap-2"
                     >
                       <ArrowUpFromLine size={12} className="text-amber-600" /> Conveyor
                     </button>
                     <button
                       onClick={() => { addNode('shelf'); setShowAddMenu(false); }}
-                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors flex items-center gap-2"
+                      className="w-full px-3 py-2 text-left text-xs hover:bg-gray-100 dark:hover:bg-white/10 text-gray-900 dark:text-white transition-colors flex items-center gap-2"
                     >
                       <Box size={12} className="text-cyan-600" /> Shelf
                     </button>
@@ -833,7 +1041,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
             {/* Sync Actions */}
             <div className="flex gap-1 pl-1">
               <button
-                onClick={reloadGraph}
+                onClick={reloadGraphStructure}
                 className="p-2 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:bg-white/5 rounded-lg transition-all"
                 title="Reload"
               >
@@ -843,9 +1051,9 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
               <button
                 onClick={async () => {
                   try {
-                    const success = await saveGraph(allNodes, edges, bgUrl);
+                    const success = await saveGraph(nodes, edges, bgUrl);
                     if (success) {
-                      await reloadGraph();
+                      await reloadGraphStructure();
                       showToast('Graph configuration saved successfully', 'success');
                     } else {
                       showToast('Save returned no confirmation — check console', 'error');
@@ -857,7 +1065,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white text-xs font-bold rounded-lg hover:bg-slate-700 shadow-md transition-all active:translate-y-0.5"
               >
                 <Save size={14} />
-                <span>Save Complete Graph Configuration</span>
+                <span>Save Complete</span>
               </button>
             </div>
           </div>
@@ -900,6 +1108,7 @@ const GraphEditor: React.FC<GraphEditorProps> = ({ graphId, visualizedPath = [] 
 
         <Controls />
         <MiniMap
+          position="bottom-left"
           className="!bg-gray-100 dark:bg-white/5 border border-slate-300 rounded-lg"
           nodeColor={(n) => {
             const type = n.data?.type || 'waypoint';

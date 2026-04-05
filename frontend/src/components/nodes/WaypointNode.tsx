@@ -54,11 +54,13 @@ export const WaypointNode = ({ data, selected, isConnectable }: NodeProps) => {
       {/* Node Body */}
       <div
         className={`
-          ${sizeClass} rounded-full shadow-lg flex items-center justify-center 
+          ${sizeClass} rounded-full shadow-lg flex items-center justify-center
           border-[3px] transition-all cursor-move z-20 relative
           ${style.color}
-          ${selected ? 'ring-4 ring-blue-500/30 scale-110' : ''} 
+          ${selected ? 'ring-4 ring-blue-500/30 scale-110' : ''}
+          ${data.highlighted ? 'ring-4 ring-yellow-400/70' : ''}
         `}
+        style={data.highlighted ? { transform: 'scale(1.15)' } : undefined}
       >
         <Icon size={isCell ? 10 : 16} className="text-white drop-shadow-sm" strokeWidth={2.5} />
 

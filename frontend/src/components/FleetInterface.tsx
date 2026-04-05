@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { LayoutGrid, Cpu, Activity, ArrowLeft, Terminal, FlaskConical, ChevronDown } from 'lucide-react';
+import { LayoutGrid, Cpu, Activity, ArrowLeft, Terminal, FlaskConical, ChevronDown, Bell, AlertTriangle, X } from 'lucide-react';
 import GraphEditor from './GraphEditor';
 import Optimization from './Optimization';
 import FleetController from './FleetController';
@@ -31,7 +31,31 @@ const FleetInterface: React.FC = () => {
     setActiveRobotName,
     dispatchRequest,
     hardReset,
+    alerts,
+    dismissAlert,
   } = useFleetGateway(simMode);
+
+  // Global toasts derived from fleet alerts
+  const [globalToasts, setGlobalToasts] = useState<{ id: string; msg: string; type: 'error' | 'warn' | 'info' }[]>([]);
+  const shownAlertIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    alerts.forEach(alert => {
+      if (shownAlertIds.current.has(alert.id)) return;
+      shownAlertIds.current.add(alert.id);
+
+      const type: 'error' | 'warn' | 'info' =
+        alert.type === 'offline' ? 'error' :
+        alert.type === 'battery_low' ? 'warn' : 'error';
+
+      const toast = { id: alert.id, msg: alert.message, type };
+      setGlobalToasts(prev => [...prev, toast]);
+
+      setTimeout(() => {
+        setGlobalToasts(prev => prev.filter(t => t.id !== toast.id));
+      }, 6000);
+    });
+  }, [alerts]);
 
   // Keep VEHICLE_ROBOT_MAP[0] in sync with the globally active robot.
   useEffect(() => {
@@ -137,9 +161,14 @@ const FleetInterface: React.FC = () => {
             </button>
             <button
               onClick={() => setActiveTab('fleet')}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'fleet' ? 'bg-white dark:bg-white/10 text-green-600 dark:text-green-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-white'}`}
+              className={`relative flex items-center gap-2 px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'fleet' ? 'bg-white dark:bg-white/10 text-green-600 dark:text-green-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-white'}`}
             >
               <Activity size={14} /> FLEET
+              {alerts.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1 shadow-sm">
+                  {alerts.length > 9 ? '9+' : alerts.length}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setActiveTab('gql')}
@@ -255,6 +284,38 @@ const FleetInterface: React.FC = () => {
           </span>
         </div>
       )}
+
+      {/* GLOBAL TOAST PANEL - Fleet Alerts */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {globalToasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl shadow-xl border backdrop-blur-sm text-xs font-bold pointer-events-auto animate-in slide-in-from-right-4 fade-in min-w-[260px] max-w-xs ${
+              toast.type === 'error'
+                ? 'bg-red-500/90 border-red-400/50 text-white'
+                : toast.type === 'warn'
+                  ? 'bg-amber-500/90 border-amber-400/50 text-white'
+                  : 'bg-slate-800/90 border-white/10 text-white'
+            }`}
+          >
+            {toast.type === 'error' ? (
+              <Bell size={13} className="shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+            )}
+            <span className="flex-1 leading-snug">{toast.msg}</span>
+            <button
+              onClick={() => {
+                setGlobalToasts(prev => prev.filter(t => t.id !== toast.id));
+                dismissAlert(toast.id);
+              }}
+              className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
 
       {/* CONTENT AREA - PASS ID DOWN */}
       <div className="flex-1 overflow-hidden relative">

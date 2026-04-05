@@ -16,24 +16,17 @@
  */
 
 import React, { useEffect, useState, useCallback, useMemo, memo, useRef } from "react";
-import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
+import {
   useReactFlow,
-  useStore,
   type Node,
   type Edge,
   Panel,
-  BackgroundVariant,
   type NodeProps,
   Handle,
   Position,
-  MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import WarehouseGraph, { type WarehouseGraphOnLoadPayload } from "./WarehouseGraph";
 import {
   Truck,
   PauseCircle,
@@ -55,10 +48,7 @@ import {
 } from "lucide-react";
 
 import { supabase } from "../lib/supabaseClient";
-import { type DBRobot, type DBNode, type DBEdge } from "../types/database";
 import { useFleetSocket, type ConnectionStatus } from "../hooks/useFleetSocket";
-import { useThemeStore } from "../store/themeStore";
-import WaypointNode from "./nodes/WaypointNode";
 import { cancelAllDispatches, setFleetPaused } from "../utils/fleetGateway";
 import { type GQLRobot, type HardResetProgress } from "../hooks/useFleetGateway";
 
@@ -78,13 +68,6 @@ interface FleetRobot {
   currentTask: string;
   isActive: boolean;
   activePath?: string[]; // Readable sequence of node aliases (e.g. ["W1", "W2", "S3"])
-}
-
-/** Props for the custom WaypointNode */
-interface WaypointNodeData {
-  type: string;
-  level?: number;
-  alias?: string;
 }
 
 /** Props for the custom RobotNode */
@@ -188,6 +171,22 @@ const AutoFitView = memo(({ trigger }: { trigger: boolean }) => {
   return null;
 });
 AutoFitView.displayName = "AutoFitView";
+
+/**
+ * TrailNode — tiny colored dot marking a past robot position.
+ */
+const TrailNode = memo<NodeProps<{ opacity: number; color: string }>>(({ data }) => (
+  <div
+    style={{
+      width: 8, height: 8,
+      borderRadius: '50%',
+      backgroundColor: data.color,
+      opacity: data.opacity,
+      pointerEvents: 'none',
+    }}
+  />
+));
+TrailNode.displayName = "TrailNode";
 
 
 /**
@@ -416,7 +415,7 @@ RobotTableRow.displayName = "RobotTableRow";
 // ============================================
 
 interface FleetControllerProps {
-  graphId: number;
+  graphId: number
   simulationRoutes?: number[][] | null;
   gqlRobots?: GQLRobot[];
   simMode?: boolean;
@@ -424,32 +423,34 @@ interface FleetControllerProps {
   activeRobotName?: string;
 }
 
-const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRoutes, gqlRobots, onHardReset, activeRobotName }) => {
-  const { theme } = useThemeStore();
-
-  // --- NODE TYPES (memoized outside render loop) ---
-  const nodeTypes = useMemo(
-    () => ({
-      waypointNode: WaypointNode,
-      robotNode: RobotNode,
-    }),
+const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRoutes, gqlRobots, simMode, onHardReset, activeRobotName }) => {
+  // --- EXTRA NODE TYPES passed into WarehouseGraph ---
+  const extraNodeTypes = useMemo(
+    () => ({ robotNode: RobotNode, trailNode: TrailNode }),
     [],
   );
 
-  const defaultEdgeOptions = useMemo(() => ({ type: "straight" }), []);
+  // --- PATH TRAIL ---
+  const trailsRef = useRef<Map<string, { x: number; y: number }[]>>(new Map());
+  const MAX_TRAIL_POINTS = 20;
 
   // --- STATE ---
-  const [dbRobots, setDbRobots] = useState<DBRobot[]>([]);
-  const [cellMap, setCellMap] = useState<Map<number, number>>(new Map());
-  const [nodeAliasMap, setNodeAliasMap] = useState<Map<number, string>>(new Map());
   const [nodesLoaded, setNodesLoaded] = useState(false);
 
   // Track active paths per robot (robotId -> list of node aliases)
   const [robotPathDetails, setRobotPathDetails] = useState<Map<number, string[]>>(new Map());
 
-  // React Flow state
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  /**
+   * Overlay nodes (robot markers + trail dots) injected into WarehouseGraph.
+   * Separate from base graph nodes, which WarehouseGraph manages internally.
+   */
+  const [overlayNodes, setOverlayNodes] = useState<Node[]>([]);
+
+  /**
+   * Overlay edges (path highlights, trail edges, sim edges) injected into WarehouseGraph.
+   * Base graph edges are managed by WarehouseGraph.
+   */
+  const [overlayEdges, setOverlayEdges] = useState<Edge[]>([]);
 
   // MQTT Hook (production-grade)
   const {
@@ -464,155 +465,31 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
 
   // Hard Reset state — maps robotName → progress steps
   const [hardResetStates, setHardResetStates] = useState<Map<string, HardResetProgress[]>>(new Map());
+  // Mobile logs toggle
+  const [showLogs, setShowLogs] = useState(false);
 
   // --- REFS (to avoid stale closures) ---
+  /** Canvas positions of all base graph nodes, populated by WarehouseGraph.onLoad. */
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  /** Maps wh_nodes.id → alias. Populated by WarehouseGraph.onLoad. */
   const nodeAliasMapRef = useRef<Map<number, string>>(new Map());
+  /** Maps wh_cells.id → wh_nodes.id. Populated by WarehouseGraph.onLoad. */
+  const cellMapRef = useRef<Map<number, number>>(new Map());
+  /** robotsRef keeps fetchPaths interval from restarting on every 200ms robot update. */
+  const robotsRef = useRef<FleetRobot[]>([]);
 
-  // Update nodePositionsRef whenever nodes change
-  useEffect(() => {
-    const newPositions = new Map<string, { x: number; y: number }>();
-    nodes.forEach(n => {
-      // Skip the background image node
-      if (n.id === 'map-bg') return;
-      newPositions.set(n.id, { x: n.position.x, y: n.position.y });
-    });
-    nodePositionsRef.current = newPositions;
-  }, [nodes]);
-
-  // Sync nodeAliasMap into a ref so simulation interval has a fresh reference
-  useEffect(() => {
-    nodeAliasMapRef.current = nodeAliasMap;
-  }, [nodeAliasMap]);
-
-  // --- LOAD STATIC DATA (Graph + Robots + Cells) ---
-  useEffect(() => {
-    if (!graphId) return;
-
-    const loadStaticData = async () => {
-      try {
-        // Load Graph
-        const { data: graphData } = await supabase
-          .from("wh_graphs")
-          .select("*")
-          .eq("id", graphId)
-          .single();
-
-        if (!graphData) {
-          console.warn("[FleetController] No graph found for id:", graphId);
-          return;
-        }
-
-        // Load Nodes
-        const { data: nodeData } = await supabase
-          .from("wh_nodes_view")
-          .select("*")
-          .eq("graph_id", graphId);
-
-        if (nodeData) {
-          const aliasMap = new Map<number, string>();
-
-          const flowNodes: Node[] = nodeData.map((n: DBNode) => {
-            aliasMap.set(n.id, n.alias || `Node ${n.id}`);
-            return {
-              id: n.id.toString(),
-              type: "waypointNode",
-              position: { x: n.x * MAP_SCALE, y: n.y * MAP_SCALE },
-              data: { type: n.type, level: n.level, alias: n.alias } as WaypointNodeData,
-              draggable: false,
-              selectable: false,
-            };
-          });
-
-          setNodeAliasMap(aliasMap);
-          setNodesLoaded(true);
-
-          // Add Map Background
-          if (graphData.map_url) {
-            let mapX = 0, mapY = 0, mapW = 1200, mapH = 800;
-            let cleanUrl = graphData.map_url;
-
-            if (graphData.map_url.includes('#')) {
-              const [base, hash] = graphData.map_url.split('#');
-              cleanUrl = base;
-              const params = new URLSearchParams(hash);
-              if (params.has('x')) mapX = parseFloat(params.get('x') || '0');
-              if (params.has('y')) mapY = parseFloat(params.get('y') || '0');
-              if (params.has('w')) mapW = parseFloat(params.get('w') || '1200');
-              if (params.has('h')) mapH = parseFloat(params.get('h') || '800');
-            }
-
-            flowNodes.unshift({
-              id: "map-bg",
-              type: "default",
-              position: { x: mapX, y: mapY },
-              data: { label: null },
-              style: {
-                width: mapW,
-                height: mapH,
-                backgroundImage: `url('${cleanUrl}')`,
-                backgroundSize: "contain",
-                zIndex: -11,
-                pointerEvents: 'none',
-                backgroundColor: 'transparent',
-                border: 'none',
-              },
-              draggable: false,
-              selectable: false,
-            });
-          }
-          setNodes(flowNodes);
-        }
-
-        // Load Edges
-        const { data: edgeData } = await supabase
-          .from("wh_edges")
-          .select("*")
-          .eq("graph_id", graphId);
-
-        if (edgeData) {
-          setEdges(
-            edgeData.map((e: DBEdge) => ({
-              id: `e${e.node_a_id}-${e.node_b_id}`,
-              source: e.node_a_id.toString(),
-              target: e.node_b_id.toString(),
-              animated: true,
-              style: { stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5,5' },
-              markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
-              type: 'straight'
-            })),
-          );
-        }
-
-        // Load Cells (for path visualization)
-        const { data: cellData } = await supabase
-          .from("wh_cells")
-          .select("id, node_id");
-        if (cellData) {
-          const map = new Map<number, number>();
-          cellData.forEach((c) => map.set(c.id, c.node_id));
-          setCellMap(map);
-        }
-
-        // Load Robots
-        try {
-          const { data: robotData, error } = await supabase
-            .from("wh_robots")
-            .select("*");
-          if (error) throw error;
-          if (robotData) {
-            setDbRobots(robotData as DBRobot[]);
-          }
-        } catch (e) {
-          console.warn("[FleetController] wh_robots error, using mock.", e);
-        }
-      } catch (err) {
-        console.error("[FleetController] Error loading static data:", err);
-      }
-    };
-
-    loadStaticData();
-  }, [graphId, setNodes, setEdges]);
+  /**
+   * Callback from WarehouseGraph once the base graph is loaded.
+   * Populates refs used by simulation and path-fetch intervals so those
+   * effects do not need to restart when robot telemetry updates arrive.
+   */
+  const handleGraphLoad = useCallback((payload: WarehouseGraphOnLoadPayload) => {
+    nodePositionsRef.current = payload.nodePositions;
+    nodeAliasMapRef.current = payload.nodeAliasMap;
+    cellMapRef.current = payload.cellMap;
+    setNodesLoaded(true);
+    console.log('[FleetController] Base graph loaded:', payload.baseNodes.length, 'nodes');
+  }, []);
 
   // --- BUILD ROBOT LIST FROM LIVE GQL DATA (source of truth) ---
   //
@@ -655,27 +532,85 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     });
   }, [gqlRobots, robotStates, robotPathDetails]);
 
-  // --- UPDATE ROBOT NODES IN REACTFLOW ---
+  // Sync robots into ref so fetchPaths interval reads latest without restarting
+  useEffect(() => {
+    robotsRef.current = robots;
+  }, [robots]);
+
+  // --- UPDATE OVERLAY NODES (robots + trail dots) ---
   useEffect(() => {
     if (robots.length === 0) return;
 
-    setNodes((prevNodes) => {
-      const staticNodes = prevNodes.filter((n) => n.type !== "robotNode");
-      const robotNodes: Node[] = robots.map((r) => ({
-        id: `robot-${r.id}`,
-        type: "robotNode",
-        position: { x: r.x, y: r.y },
-        data: {
-          label: r.name,
-          status: r.status,
-          battery: r.battery,
-        } as RobotNodeData,
-        draggable: false,
-        zIndex: 100,
-      }));
-      return [...staticNodes, ...robotNodes];
+    // Update trail position history
+    robots.forEach((robot) => {
+      if (!robot.isActive) return;
+      const existing = trailsRef.current.get(robot.name) ?? [];
+      const newPos = { x: robot.x, y: robot.y };
+      const moved =
+        existing.length === 0 ||
+        Math.hypot(newPos.x - existing[0].x, newPos.y - existing[0].y) > 8;
+      if (moved) {
+        trailsRef.current.set(robot.name, [newPos, ...existing].slice(0, MAX_TRAIL_POINTS));
+      }
     });
-  }, [robots, setNodes]);
+
+    // Build robot marker nodes
+    const robotNodes: Node[] = robots.map((r) => ({
+      id: `robot-${r.id}`,
+      type: 'robotNode',
+      position: { x: r.x, y: r.y },
+      data: { label: r.name, status: r.status, battery: r.battery } as RobotNodeData,
+      draggable: false,
+      zIndex: 100,
+    }));
+
+    // Build trail dot nodes (older dots = more transparent)
+    const trailNodes: Node[] = [];
+    trailsRef.current.forEach((points, robotName) => {
+      const ri = robots.findIndex((r) => r.name === robotName);
+      if (ri < 0) return;
+      const color = VEHICLE_COLORS[ri % VEHICLE_COLORS.length];
+      points.forEach((p, i) => {
+        trailNodes.push({
+          id: `trail-${robotName}-${i}`,
+          type: 'trailNode',
+          position: p,
+          data: { opacity: Math.max(0.07, ((points.length - i) / points.length) * 0.6), color },
+          draggable: false,
+          selectable: false,
+          zIndex: 10 + ri,
+        });
+      });
+    });
+
+    setOverlayNodes([...trailNodes, ...robotNodes]);
+
+    // Build trail edges and inject into overlayEdges (preserve non-trail edges)
+    const trailEdges: Edge[] = [];
+    trailsRef.current.forEach((points, robotName) => {
+      if (points.length < 2) return;
+      const ri = robots.findIndex((r) => r.name === robotName);
+      if (ri < 0) return;
+      const color = VEHICLE_COLORS[ri % VEHICLE_COLORS.length];
+      for (let i = 0; i < points.length - 1; i++) {
+        const opacity = Math.max(0.04, ((points.length - i - 1) / points.length) * 0.45);
+        trailEdges.push({
+          id: `trail-edge-${robotName}-${i}`,
+          source: `trail-${robotName}-${i + 1}`,
+          target: `trail-${robotName}-${i}`,
+          type: 'straight',
+          animated: false,
+          selectable: false,
+          style: { stroke: color, strokeWidth: 2, strokeOpacity: opacity },
+        });
+      }
+    });
+
+    setOverlayEdges((prev) => {
+      const withoutTrail = prev.filter((e) => !e.id.startsWith('trail-edge-'));
+      return [...withoutTrail, ...trailEdges];
+    });
+  }, [robots]);
 
   // --- SIMULATION ENGINE: Animate dummy robots along VRP routes ---
   const simIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -691,8 +626,8 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     }
 
     if (!simulationRoutes || simulationRoutes.length === 0) {
-      // Clear simulation path edges
-      setEdges((prev) => prev.filter((e) => !e.id.startsWith("sim-path-")));
+      // Clear simulation path edges from overlay
+      setOverlayEdges((prev) => prev.filter((e) => !e.id.startsWith("sim-path-")));
       setRobotPathDetails(new Map());
       currentSimRoutesRef.current = "";
       return;
@@ -717,7 +652,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
       return nodePositionsRef.current.get(String(nodeId)) || null;
     };
 
-    // Set initial path details for table
+    // Set initial path details for table (use nodeAliasMapRef from onLoad)
     const initialPathDetails = new Map<number, string[]>();
     simulationRoutes.forEach((route, vi) => {
       const aliases = route.map((nid) => nodeAliasMapRef.current.get(nid) ?? `Node ${nid}`);
@@ -749,7 +684,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
       }
     });
 
-    setEdges((prev) => {
+    setOverlayEdges((prev) => {
       const withoutSimEdges = prev.filter((e) => !e.id.startsWith("sim-path-"));
       return [...withoutSimEdges, ...simEdges];
     });
@@ -789,7 +724,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
 
         if (edgesToDim.length > 0) {
           const dimSet = new Set(edgesToDim);
-          setEdges((prev) =>
+          setOverlayEdges((prev) =>
             prev.map((e) =>
               dimSet.has(e.id) ? { ...e, animated: false, style: { ...e.style, opacity: 0.3 } } : e
             )
@@ -821,10 +756,19 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
   }, [simulationRoutes, nodesLoaded]);
 
   // --- PATH VISUALIZATION & SEQUENCE EXTRACTION ---
+  // robots is kept in robotsRef so adding it to deps would restart the interval
+  // every 200ms (whenever MQTT state updates). nodesLoaded gates the interval
+  // start so it only runs after WarehouseGraph.onLoad has populated the refs.
   useEffect(() => {
-    if (robots.length === 0 || cellMap.size === 0 || nodeAliasMap.size === 0) return;
+    if (!nodesLoaded) return;
 
     const fetchPaths = async () => {
+      const currentRobots = robotsRef.current;
+      if (currentRobots.length === 0) return;
+      const cellMap = cellMapRef.current;
+      const nodeAliasMap = nodeAliasMapRef.current;
+      if (cellMap.size === 0 || nodeAliasMap.size === 0) return;
+
       try {
         const { data: assignments } = await supabase
           .from("wh_assignments")
@@ -832,8 +776,8 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           .eq("status", "in_progress");
 
         if (!assignments || assignments.length === 0) {
-          setEdges((prev) => prev.filter((e) => !e.id.startsWith("path-")));
-          setRobotPathDetails(new Map()); // Clear paths
+          setOverlayEdges((prev) => prev.filter((e) => !e.id.startsWith("path-")));
+          setRobotPathDetails(new Map());
           return;
         }
 
@@ -854,18 +798,16 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
           const asnTasks = tasks.filter((t) => t.assignment_id === asn.id);
           if (asnTasks.length === 0) return;
 
-          const bot = robots.find((r) => r.id === asn.robot_id);
+          const bot = currentRobots.find((r) => r.id === asn.robot_id);
           let prevSource = bot ? `robot-${bot.id}` : null;
           let prevSourceHandle = "mobile-source";
 
-          // Extract path aliases for the table
           const aliasSequence: string[] = [];
 
           asnTasks.forEach((task, i) => {
             const targetNodeId = cellMap.get(task.cell_id);
             if (targetNodeId === undefined || targetNodeId === null) return;
 
-            // Get Alias
             const alias = nodeAliasMap.get(targetNodeId) ?? `Node ${targetNodeId}`;
             aliasSequence.push(alias);
 
@@ -880,29 +822,23 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
                 target: targetHandle,
                 targetHandle: "top-target",
                 animated: true,
-                style: {
-                  stroke: "#22c55e",
-                  strokeWidth: 2,
-                  strokeDasharray: "5,5",
-                },
-                type: 'straight'
+                style: { stroke: "#22c55e", strokeWidth: 2, strokeDasharray: "5,5" },
+                type: 'animatedEdge',
               });
             }
             prevSource = targetHandle;
             prevSourceHandle = "bottom-source";
           });
 
-          // Store for table display
           if (asn.robot_id) {
             newPathDetails.set(asn.robot_id, aliasSequence);
           }
         });
 
         setRobotPathDetails(newPathDetails);
-
-        setEdges((prev) => {
-          const mapEdges = prev.filter((e) => !e.id.startsWith("path-"));
-          return [...mapEdges, ...pathEdges];
+        setOverlayEdges((prev) => {
+          const nonPath = prev.filter((e) => !e.id.startsWith("path-"));
+          return [...nonPath, ...pathEdges];
         });
       } catch (err) {
         console.error("[FleetController] Error fetching paths:", err);
@@ -912,7 +848,8 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
     fetchPaths();
     const interval = setInterval(fetchPaths, PATH_POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [robots, cellMap, nodeAliasMap, setEdges]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodesLoaded]);
 
   // --- COMMAND HANDLER (stable callback) ---
   const handleCommand = useCallback(
@@ -972,28 +909,14 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
 
   // --- RENDER ---
   return (
-    <div className="w-full h-full bg-gray-50 dark:bg-[#09090b] text-gray-900 dark:text-white transition-colors relative font-sans">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        fitView
-        minZoom={0.05}
-        maxZoom={4}
-        panOnScroll
-        selectionOnDrag={false}
-        panOnDrag
-        defaultEdgeOptions={defaultEdgeOptions}
+    <div className="w-full h-full relative font-sans">
+      <WarehouseGraph
+        graphId={graphId}
+        overlayNodes={overlayNodes}
+        overlayEdges={overlayEdges}
+        extraNodeTypes={extraNodeTypes}
+        onLoad={handleGraphLoad}
       >
-        <Background
-          color={theme === "dark" ? "#1e293b" : "#cbd5e1"}
-          gap={20}
-          size={1}
-          variant={BackgroundVariant.Dots}
-        />
-
         {/* Header Panel */}
         <Panel position="top-left" className="m-6">
           <div className="bg-white/90 dark:bg-[#121214]/90 backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-xl px-5 py-4 rounded-2xl flex items-center gap-4 text-gray-900 dark:text-white transition-colors">
@@ -1006,10 +929,15 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
               </h2>
               <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400 mt-1.5 flex items-center gap-3">
                 <ConnectionStatusBadge
-                  status={simulationRoutes && simulationRoutes.length > 0 && connectionStatus === 'disconnected' ? 'connected' : connectionStatus}
+                  status={connectionStatus}
                   reconnectAttempts={reconnectAttempts}
                   onReconnect={forceReconnect}
                 />
+                {simMode && (
+                  <span className="px-1.5 py-0.5 bg-amber-500/15 border border-amber-400/30 text-amber-500 text-[9px] font-bold rounded-full uppercase tracking-wider">
+                    SIM
+                  </span>
+                )}
                 <span className="text-gray-300 dark:text-gray-700">|</span>
                 <span className="flex items-center gap-1.5">
                   <span className="uppercase tracking-wider">Active:</span>
@@ -1144,8 +1072,16 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
             )}
           </div>
 
+          {/* Logs toggle (mobile only) */}
+          <button
+            onClick={() => setShowLogs(v => !v)}
+            className="md:hidden shrink-0 pointer-events-auto self-end px-2 py-1.5 bg-white/90 dark:bg-[#121214]/90 border border-gray-200 dark:border-white/10 rounded-xl shadow-md text-[10px] font-bold text-gray-600 dark:text-gray-300 flex items-center gap-1"
+          >
+            <Terminal size={12} /> {showLogs ? 'Hide Logs' : 'Show Logs'}
+          </button>
+
           {/* Logs Side Panel */}
-          <div className="w-72 hidden md:block pointer-events-auto">
+          <div className={`w-72 pointer-events-auto ${showLogs ? 'block' : 'hidden md:block'}`}>
             <div className="bg-white/95 dark:bg-[#121214]/90 backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl flex flex-col overflow-hidden h-full max-h-64">
               <div className="bg-gradient-to-r from-gray-50 to-white dark:from-white/5 dark:to-transparent px-4 py-3 border-b border-gray-100 dark:border-white/5 flex justify-between items-center">
                 <span className="text-[10px] font-bold text-gray-700 dark:text-gray-300 uppercase flex items-center gap-1.5">
@@ -1194,13 +1130,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
 
         </Panel>
 
-        <Controls className="!bg-white !border-gray-200 dark:border-white/10 !text-slate-600 !fill-slate-600 shadow-lg" />
-        <MiniMap
-          className="!bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-lg shadow-lg"
-          nodeColor={(n) => (n.type === "robotNode" ? "#ef4444" : "#94a3b8")}
-        />
-
-      </ReactFlow>
+      </WarehouseGraph>
     </div>
   );
 };

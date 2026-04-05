@@ -27,3 +27,14 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
+/* ── Warehouse graph edge animation (Marching Ants) ────────────────────────── */
+@keyframes wcs-edge-flow {
+  from { stroke-dashoffset: 20; }
+  to   { stroke-dashoffset: 0;  }
+}
+
+/** Applied to the overlay <path> inside AnimatedEdge when animated=true. */
+.animated-edge-flow {
+  animation: wcs-edge-flow 0.6s linear infinite;
+}
+
