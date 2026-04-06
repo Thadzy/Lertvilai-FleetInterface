@@ -44,13 +44,17 @@ JWT_TOKENS=$(python3 -c "$GENERATE_JWTS_PY" "$JWT_SECRET")
 ANON_KEY=$(echo "$JWT_TOKENS" | sed -n '1p')
 SERVICE_ROLE_KEY=$(echo "$JWT_TOKENS" | sed -n '2p')
 
-# Detect Local IP (works on macOS and Linux)
-LOCAL_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+# Detect Local IP (Prioritize macOS native command for accuracy)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null)
+fi
+
+# Fallback for Linux or if en0 is not active
 if [ -z "$LOCAL_IP" ]; then
-  LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null) # macOS en0
+  LOCAL_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
 fi
 if [ -z "$LOCAL_IP" ]; then
-  LOCAL_IP=$(hostname -I | awk '{print $1}' 2>/dev/null) # Linux general
+  LOCAL_IP=$(hostname -I | awk '{print $1}' 2>/dev/null)
 fi
 LOCAL_IP="${LOCAL_IP:-127.0.0.1}"
 
