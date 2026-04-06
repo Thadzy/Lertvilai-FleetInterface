@@ -16,6 +16,7 @@ export interface ViewNode {
   graph_id: number;
   x: number;
   y: number;
+  yaw: number | null;
   height: number | null;   // conveyor-specific
   shelf_id: number | null; // cell-specific
   level_id: number | null; // cell-specific
@@ -173,6 +174,7 @@ export const useGraphData = (graphId: number) => {
             data: {
               label: n.alias || `Node_${n.id}`,
               type: n.type,
+              yaw: n.yaw,
               cells: cellsByShelfId.get(n.id) || [],
               activeLevelId: null, // updated by GraphEditor level filter
             },
@@ -187,6 +189,7 @@ export const useGraphData = (graphId: number) => {
           data: {
             label: n.alias || `Node_${n.id}`,
             type: n.type,
+            yaw: n.yaw,
             height: n.height,
           },
         };
@@ -377,11 +380,13 @@ export const useGraphData = (graphId: number) => {
       await Promise.all(existingNodes.map(async ({ flowNode, dbId }) => {
         const x = flowNode.position.x / SCALE_FACTOR;
         const y = flowNode.position.y / SCALE_FACTOR;
+        const yaw = flowNode.data?.yaw ?? 0.0;
 
         const { error } = await supabase.rpc('wh_update_node_position', {
           p_node_id: dbId,
           p_x: x,
-          p_y: y
+          p_y: y,
+          p_yaw: yaw
         });
 
         if (error) {
@@ -399,6 +404,7 @@ export const useGraphData = (graphId: number) => {
         const nodeType = (flowNode.data.type || 'waypoint') as string;
         const x = flowNode.position.x / SCALE_FACTOR;
         const y = flowNode.position.y / SCALE_FACTOR;
+        const yaw = flowNode.data?.yaw ?? 0.0;
         const alias = flowNode.data.label || null;
 
         let newNodeId: number | null = null;
@@ -406,7 +412,7 @@ export const useGraphData = (graphId: number) => {
         try {
           if (nodeType === 'waypoint') {
             const { data, error } = await supabase.rpc('wh_create_waypoint', {
-              p_graph_id: graphId, p_x: x, p_y: y, p_alias: alias
+              p_graph_id: graphId, p_x: x, p_y: y, p_yaw: yaw, p_alias: alias
             });
             if (error) throw error;
             newNodeId = data;
@@ -421,7 +427,7 @@ export const useGraphData = (graphId: number) => {
           } else if (nodeType === 'conveyor') {
             const height = flowNode.data.height ?? 1.0;
             const { data, error } = await supabase.rpc('wh_create_conveyor', {
-              p_graph_id: graphId, p_x: x, p_y: y, p_height: height, p_alias: alias
+              p_graph_id: graphId, p_x: x, p_y: y, p_yaw: yaw, p_height: height, p_alias: alias
             });
             if (error) throw error;
             newNodeId = data;
@@ -432,7 +438,7 @@ export const useGraphData = (graphId: number) => {
             });
             if (depotId) {
               await supabase.rpc('wh_update_node_position', {
-                p_node_id: depotId, p_x: x, p_y: y
+                p_node_id: depotId, p_x: x, p_y: y, p_yaw: yaw
               });
               newNodeId = depotId;
             }
@@ -620,7 +626,7 @@ export const useGraphData = (graphId: number) => {
       // 1. Get Target Node details
       const { data: targetNode, error: tErr } = await supabase
         .from('wh_nodes_view')
-        .select('x, y, type, graph_id, alias')
+        .select('x, y, yaw, type, graph_id, alias')
         .eq('id', nodeId)
         .single();
       if (tErr || !targetNode) throw new Error("Target node not found.");
@@ -633,7 +639,7 @@ export const useGraphData = (graphId: number) => {
       // 2. Get Depot details
       const { data: depotNode, error: dErr } = await supabase
         .from('wh_nodes_view')
-        .select('id, x, y')
+        .select('id, x, y, yaw')
         .eq('graph_id', graphId)
         .eq('type', 'depot')
         .single();
@@ -650,6 +656,7 @@ export const useGraphData = (graphId: number) => {
         p_graph_id: graphId,
         p_x: depotNode.x,
         p_y: depotNode.y,
+        p_yaw: depotNode.yaw ?? 0.0,
         p_alias: `W_from_depot_${Date.now().toString().slice(-4)}`
       });
       if (wpErr) throw wpErr;
@@ -671,7 +678,8 @@ export const useGraphData = (graphId: number) => {
       const { error: pErr } = await supabase.rpc('wh_update_node_position', {
         p_node_id: depotId,
         p_x: targetNode.x,
-        p_y: targetNode.y
+        p_y: targetNode.y,
+        p_yaw: targetNode.yaw ?? 0.0
       });
       if (pErr) throw pErr;
 

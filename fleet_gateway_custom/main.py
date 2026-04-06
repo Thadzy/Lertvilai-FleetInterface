@@ -138,6 +138,7 @@ class Node:
     tag_id: Optional[str] = None
     x: float = 0.0
     y: float = 0.0
+    yaw: float = 0.0
     height: float = 0.0
     node_type: NodeType = NodeType.OTHER
 

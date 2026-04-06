@@ -41,6 +41,7 @@ import ReactFlow, {
   type Node,
   type Edge,
   type NodeTypes,
+  type NodeProps,
   BackgroundVariant,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -55,10 +56,26 @@ import AnimatedEdge from './edges/AnimatedEdge';
 // Built-in node / edge types
 // ──────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Read-only map background node.
+ * Renders the warehouse floor-plan image that was uploaded and stored in
+ * wh_graphs.map_url.  NodeResizer is intentionally omitted because
+ * WarehouseGraph is a read-only canvas.
+ */
+const MapNode = ({ data }: NodeProps) => (
+  <img
+    src={data.url}
+    alt="Map Background"
+    style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
+    draggable={false}
+  />
+);
+
 /** Node types always available inside WarehouseGraph. */
 const BASE_NODE_TYPES: NodeTypes = {
   waypointNode: WaypointNode,
   shelfNode: ShelfNode,
+  mapNode: MapNode,
 };
 
 /** Edge types always available inside WarehouseGraph. */

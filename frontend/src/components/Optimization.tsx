@@ -151,7 +151,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch, gqlRob
     if (!graphId) return null;
     try {
       const { data: nodeData } = await supabase
-        .from('wh_nodes_detailed_view').select('*').eq('graph_id', graphId);
+        .from('wh_nodes_view').select('*').eq('graph_id', graphId);
       const { data: edgeData } = await supabase
         .from('wh_edges').select('*').eq('graph_id', graphId);
       const { data: graphRecord } = await supabase
@@ -952,35 +952,23 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch, gqlRob
       <div className="hidden lg:flex flex-1 bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl shadow-sm overflow-hidden flex-col relative justify-center items-center z-0">
         <div className="absolute inset-0 opacity-[0.03] dark:opacity-[0.02]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, black 1px, transparent 0)', backgroundSize: '24px 24px' }} />
         
-        {mapData?.nodes && mapData.nodes.length > 0 ? (
-          <RouteVisualizer
-            isOpen={true}
-            inline={true}
-            map_url={mapData?.map_url}
-            dbNodes={mapData.nodes}
-            dbEdges={mapData.edges}
-            solution={null}
-            onClose={() => {}}
-          />
-        ) : (
-          <div className="text-center z-10 p-8">
-            <div className="w-16 h-16 bg-gray-100 dark:bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Loader2 size={24} className="text-gray-400 animate-spin" />
-            </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Loading graph layout…</p>
-          </div>
-        )}
+        <RouteVisualizer
+          graphId={graphId}
+          isOpen={true}
+          inline={true}
+          solution={null}
+          onClose={() => {}}
+        />
       </div>
 
       {/* ================================================================= */}
       {/* MAP SELECTOR (for picking start/end nodes)                        */}
       {/* ================================================================= */}
       <RouteVisualizer
+        graphId={graphId}
         isOpen={selectingMode !== null}
         onClose={() => setSelectingMode(null)}
         solution={null}
-        dbNodes={mapData?.nodes || []}
-        dbEdges={mapData?.edges || []}
         onNodeClick={handleNodeSelect}
         title={`Select ${selectingMode === 'pickup' ? 'Pickup' : 'Delivery'} Node`}
         instruction="Click a node on the map to select it"
@@ -990,6 +978,7 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch, gqlRob
       {/* A* PREVIEW VISUALIZER (single task preview)                       */}
       {/* ================================================================= */}
       <RouteVisualizer
+        graphId={graphId}
         isOpen={showPreviewVisualizer}
         onClose={() => {
           setShowPreviewVisualizer(false);
@@ -997,19 +986,16 @@ const Optimization: React.FC<OptimizationProps> = ({ graphId, onDispatch, gqlRob
           setPreviewingTaskId(null);
         }}
         solution={previewSolution}
-        dbNodes={mapData?.nodes || []}
-        dbEdges={mapData?.edges || []}
       />
 
       {/* ================================================================= */}
       {/* VRP SOLUTION VISUALIZER (multi-vehicle routes)                    */}
       {/* ================================================================= */}
       <RouteVisualizer
+        graphId={graphId}
         isOpen={showVrpVisualizer}
         onClose={() => setShowVrpVisualizer(false)}
         solution={vrpSolution}
-        dbNodes={mapData?.nodes || []}
-        dbEdges={mapData?.edges || []}
       />
     </div>
   );

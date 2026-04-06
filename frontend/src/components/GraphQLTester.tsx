@@ -221,7 +221,7 @@ async function sendTravel(
   const data = await gql<{ sendTravelOrder: MutResult }>(
     endpoint,
     `mutation SendTravel($robotName: String!, $targetAlias: String!) {
-       sendTravelOrder(travelOrder: { robotName: $robotName, targetNodeAlias: $targetAlias }) {
+       sendTravelOrder(order: { robotName: $robotName, targetNodeAlias: $targetAlias }) {
          success message
        }
      }`,
@@ -278,16 +278,16 @@ async function clearRobotError(endpoint: string, robotName: string): Promise<Mut
   return raw as MutResult;
 }
 
-/** Cancels ALL queued jobs on the named robot (bulk cancel, no uuid filter). */
-async function cancelAllJobs(endpoint: string, robotName: string): Promise<MutResult> {
-  const data = await gql<{ cancelJobs: MutResult }>(
+/** Cancels the current active job on the named robot. */
+async function cancelCurrentJob(endpoint: string, robotName: string): Promise<MutResult> {
+  const data = await gql<{ cancelCurrentJob: MutResult }>(
     endpoint,
-    `mutation CancelAll($robotName: String!) {
-       cancelJobs(robotName: $robotName) { success message }
+    `mutation CancelCurrent($robotName: String!) {
+       cancelCurrentJob(robotName: $robotName) { success message }
      }`,
     { robotName },
   );
-  return data.cancelJobs;
+  return data.cancelCurrentJob;
 }
 
 /**
@@ -673,19 +673,19 @@ const FleetControlPanel: React.FC<FleetControlPanelProps> = ({ activeRobotName, 
     }
   };
 
-  /** Cancels all queued jobs on the selected robot. */
+  /** Cancels the current active job on the selected robot. */
   const handleCancelAll = () => {
     if (!selectedName) return;
     const payload = { robotName: selectedName };
     if (simMode) {
-      addLog('sim', 'mutation/cancelJobs',
-        `[SIMULATION] Command 'cancelJobs' (all) sent successfully with payload: ${JSON.stringify(payload)}`);
-      // Optimistically clear the local job queue.
+      addLog('sim', 'mutation/cancelCurrentJob',
+        `[SIMULATION] Command 'cancelCurrentJob' sent successfully with payload: ${JSON.stringify(payload)}`);
+      // Optimistically clear the local current job.
       setRobots(prev => prev.map(r =>
-        r.name === selectedName ? { ...r, currentJob: null, jobQueue: [] } : r));
-      void exec('cancelAll', 'cancelJobs(all)', () => simulateMut('cancelJobs', payload));
+        r.name === selectedName ? { ...r, currentJob: null } : r));
+      void exec('cancelAll', 'cancelCurrentJob', () => simulateMut('cancelCurrentJob', payload));
     } else {
-      void exec('cancelAll', 'cancelJobs(all)', () => cancelAllJobs(endpoint, selectedName));
+      void exec('cancelAll', 'cancelCurrentJob', () => cancelCurrentJob(endpoint, selectedName));
     }
   };
 

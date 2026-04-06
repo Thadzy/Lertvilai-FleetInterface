@@ -1,25 +1,45 @@
-import React, { useEffect, useState, useMemo } from 'react';
+/**
+ * @file RouteVisualizer.tsx
+ * @description Modal and inline warehouse graph visualizer for VRP solutions.
+ *
+ * Renders the warehouse layout using the same `useGraphData.loadGraph()` pipeline
+ * as the Graph Editor, ensuring visual consistency across all tabs (nodes,
+ * background image, shelf grid, edge styles all match exactly).
+ *
+ * Solution overlay:
+ *   - Base edges that lie along a solved route are animated and coloured by vehicle.
+ *   - Edges that appear in the solution but not in the base graph are rendered as
+ *     dashed "virtual" edges so the user can always see the intended path.
+ *   - When no solution is active the raw base graph is shown as a live preview.
+ */
+
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
   MarkerType,
-  useNodesState,
-  useEdgesState,
+  Controls,
   type Node,
-  type Edge
+  type Edge,
+  type NodeTypes,
+  type NodeProps,
 } from 'reactflow';
 import { X, Map as MapIcon, Loader2, CheckSquare } from 'lucide-react';
 import 'reactflow/dist/style.css';
-import { type DBNode, type DBEdge } from '../types/database';
-import WaypointNode from './nodes/WaypointNode';
+
 import { useThemeStore } from '../store/themeStore';
+import { useGraphData } from '../hooks/useGraphData';
+import WaypointNode from './nodes/WaypointNode';
+import ShelfNode from './nodes/ShelfNode';
+import AnimatedEdge from './edges/AnimatedEdge';
 
-
-// --- TYPE DEFINITIONS ---
+// ============================================================
+// TYPES
+// ============================================================
 
 interface SolverRoute {
   vehicle_id: number;
-  steps?: any[];
+  steps?: { node_id: number; [key: string]: any }[];
   nodes?: number[];
   distance: number;
 }
@@ -38,239 +58,268 @@ export interface SolverSolution {
 }
 
 interface RouteVisualizerProps {
+  /**
+   * ID of the warehouse graph to display.
+   * The component calls `useGraphData(graphId).loadGraph()` internally so the
+   * canvas always matches the Graph Editor view.
+   */
+  graphId: number;
   isOpen: boolean;
   onClose: () => void;
   solution: SolverSolution | null;
-  dbNodes: DBNode[];
-  dbEdges: DBEdge[];
+  /** Called with the DB node ID when the user clicks a node (simulation mode). */
   onNodeClick?: (nodeId: number) => void;
   title?: string;
   instruction?: string;
+  /** When true the component renders inline (no modal overlay). */
   inline?: boolean;
-  map_url?: string | null;
 }
 
+// ============================================================
+// COLOUR PALETTE — one colour per vehicle route
+// ============================================================
+
+const VEHICLE_COLORS = [
+  '#2563eb', // blue
+  '#dc2626', // red
+  '#16a34a', // green
+  '#9333ea', // purple
+  '#ea580c', // orange
+  '#0891b2', // cyan
+];
+
+// ============================================================
+// READ-ONLY MAP BACKGROUND NODE
+// ============================================================
+
+/**
+ * Renders the warehouse floor-plan image stored in wh_graphs.map_url.
+ * Identical to the read-only MapNode in WarehouseGraph.tsx.
+ */
+const MapNode = ({ data }: NodeProps) => (
+  <img
+    src={data.url}
+    alt="Map Background"
+    style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
+    draggable={false}
+  />
+);
+
+// ============================================================
+// NODE / EDGE TYPE REGISTRIES
+// ============================================================
+
+/** Stable reference — defined outside the component to avoid re-registration. */
+const NODE_TYPES: NodeTypes = {
+  waypointNode: WaypointNode,
+  shelfNode:    ShelfNode,
+  mapNode:      MapNode,
+};
+
+const EDGE_TYPES = { animatedEdge: AnimatedEdge };
+
+// ============================================================
+// COMPONENT
+// ============================================================
+
 const RouteVisualizer: React.FC<RouteVisualizerProps> = ({
+  graphId,
   isOpen,
   onClose,
   solution,
-  dbNodes,
-  dbEdges,
   onNodeClick,
-  title = "Route Visualization",
+  title = 'Route Visualization',
   instruction,
   inline = false,
-  map_url
 }) => {
-  const { theme } = useThemeStore();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const { theme }     = useThemeStore();
+  const { loadGraph } = useGraphData(graphId);
 
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [isPathProcessing, setIsPathProcessing] = useState(false);
+  // ── Base graph (loaded from Supabase — same pipeline as Graph Editor) ──────
+  const [baseNodes, setBaseNodes] = useState<Node[]>([]);
+  const [baseEdges, setBaseEdges] = useState<Edge[]>([]);
+  const [graphLoading, setGraphLoading] = useState(false);
 
-  const handleNodeClick = (_: React.MouseEvent, node: Node) => {
-    if (onNodeClick && !isPathProcessing) {
-      setIsPathProcessing(true);
-      onNodeClick(parseInt(node.id));
-      // Reset processing after a short delay since simulatePath is async but state update is fast
-      setTimeout(() => setIsPathProcessing(false), 500);
-    }
-  };
-
-  const nodeTypes = useMemo(() => ({ waypointNode: WaypointNode }), []);
-
+  /**
+   * Load the base graph whenever the component becomes visible.
+   * Uses a `cancelled` flag to discard stale results on fast open/close cycles.
+   */
   useEffect(() => {
-    if ((!isOpen && !inline) || !dbNodes) return;
+    if (!graphId || (!isOpen && !inline)) return;
 
-    // 1. SETUP NODES
-    const scale = 100;
+    let cancelled = false;
+    setGraphLoading(true);
 
-    // Pre-calculate shelf positions and cell counts for fanning logic
-    const shelfPositions = new Map<number, { x: number; y: number }>();
-    const cellsByShelf = new Map<number, number>();
-    const cellIndexByShelf = new Map<number, number>();
+    loadGraph().then((result) => {
+      if (cancelled) return;
+      setBaseNodes(result.nodes);
+      setBaseEdges(result.edges);
+      setGraphLoading(false);
+    });
 
-    dbNodes.forEach(n => {
-      if (n.type === 'shelf') {
-        shelfPositions.set(n.id, { x: n.x, y: n.y });
-      }
-      if (n.type === 'cell' && (n as any).shelf_id != null) {
-        const sid = (n as any).shelf_id;
-        cellsByShelf.set(sid, (cellsByShelf.get(sid) || 0) + 1);
+    return () => { cancelled = true; };
+  }, [graphId, isOpen, inline, loadGraph]);
+
+  // ── Solution edge overlay ─────────────────────────────────────────────────
+
+  /**
+   * Derives the display edge set from the base graph + active solution.
+   *
+   * Logic:
+   *   1. For each route, iterate consecutive step pairs (A → B).
+   *   2. If a base edge connects A and B, mark it animated with the vehicle colour.
+   *   3. If no base edge exists for that step, create a dashed virtual edge so
+   *      the path is always visible even in disconnected graph states.
+   *   4. All base edges NOT on any route path are dimmed (grey, 40 % opacity).
+   *   5. When no solution is active, return the base edges unchanged.
+   */
+  const displayEdges = useMemo<Edge[]>(() => {
+    if (!solution?.routes?.length) return baseEdges;
+
+    // Map each active base-edge ID to the vehicle colour that traverses it.
+    const activeEdgeColor = new Map<string, string>();
+    const virtualEdges: Edge[] = [];
+
+    solution.routes.forEach((route, routeIdx) => {
+      const steps = route.steps ?? [];
+      const color = VEHICLE_COLORS[routeIdx % VEHICLE_COLORS.length];
+
+      for (let i = 0; i < steps.length - 1; i++) {
+        const srcId = String(steps[i].node_id);
+        const tgtId = String(steps[i + 1].node_id);
+
+        // Locate the matching base edge (edges are bidirectional in the DB).
+        const matchedEdge = baseEdges.find(
+          (e) =>
+            (e.source === srcId && e.target === tgtId) ||
+            (e.source === tgtId && e.target === srcId),
+        );
+
+        if (matchedEdge) {
+          // Prefer a more prominent colour if multiple routes share an edge.
+          activeEdgeColor.set(matchedEdge.id, color);
+        } else {
+          // The solver produced a step that skips intermediate nodes.
+          // Show it as a dashed virtual edge so the user can still follow the path.
+          virtualEdges.push({
+            id: `virtual-${routeIdx}-${i}-${srcId}-${tgtId}`,
+            source: srcId,
+            target: tgtId,
+            animated: true,
+            type: 'animatedEdge',
+            style: {
+              stroke: color,
+              strokeWidth: 4,
+              strokeDasharray: '10 5',
+            },
+            markerEnd: { type: MarkerType.ArrowClosed, color },
+            zIndex: 10,
+          });
+        }
       }
     });
 
-    const flowNodes: Node[] = dbNodes.map(n => {
-      let posX = n.x * scale;
-      let posY = n.y * scale;
-
-      // Fanning logic for cells (mirroring useGraphData.ts)
-      if (n.type === 'cell' && (n as any).shelf_id != null) {
-        const sid = (n as any).shelf_id;
-        const shelfPos = shelfPositions.get(sid);
-        if (shelfPos) {
-          const cellIdx = cellIndexByShelf.get(sid) || 0;
-          cellIndexByShelf.set(sid, cellIdx + 1);
-          const totalCells = cellsByShelf.get(sid) || 1;
-          
-          // Arc math: arrange cells in a small arc below their shelf
-          const angle = -Math.PI / 2 + (cellIdx * Math.PI / 4) - ((totalCells - 1) * Math.PI / 8);
-          const radius = 50; // px offset from shelf center
-          posX = shelfPos.x * scale + Math.cos(angle) * radius;
-          posY = shelfPos.y * scale + Math.sin(angle) * radius + 40;
-        }
+    // Restyle base edges: highlight active ones, dim inactive ones.
+    const styledBase = baseEdges.map((e) => {
+      const color = activeEdgeColor.get(e.id);
+      if (color) {
+        return {
+          ...e,
+          animated: true,
+          style: { stroke: color, strokeWidth: 4 },
+          zIndex: 10,
+        };
       }
-
       return {
-        id: String(n.id), // Stringify for ReactFlow
-        type: 'waypointNode',
-        position: { x: posX, y: posY },
-        data: {
-          label: n.alias || String(n.id),
-          type: n.type,
-          levelAlias: n.level_alias || (n as any).levelAlias || null
-        },
-        draggable: false,
-        style: {
-          zIndex: 10
-        }
+        ...e,
+        animated: false,
+        style: { stroke: '#94a3b8', strokeWidth: 1, opacity: 0.4 },
+        zIndex: 0,
       };
     });
 
-    if (map_url) {
-      let mapX = 0, mapY = 0, mapW = 1200, mapH = 800;
-      let cleanUrl = map_url;
+    return [...styledBase, ...virtualEdges];
+  }, [solution, baseEdges]);
 
-      if (map_url.includes('#')) {
-        const [base, hash] = map_url.split('#');
-        cleanUrl = base;
-        const params = new URLSearchParams(hash);
-        if (params.has('x')) mapX = parseFloat(params.get('x') || '0');
-        if (params.has('y')) mapY = parseFloat(params.get('y') || '0');
-        if (params.has('w')) mapW = parseFloat(params.get('w') || '1200');
-        if (params.has('h')) mapH = parseFloat(params.get('h') || '800');
+  // ── Node display array (inject onCellClick into shelf nodes) ────────────
+
+  /**
+   * When the visualizer is in node-selection mode (`onNodeClick` is set),
+   * inject `onCellClick` into each ShelfNode's data so that clicking an
+   * individual cell div calls `onNodeClick(cellId)` directly.
+   * Cell nodes are hidden in the base graph (rendered inside ShelfNode),
+   * so this is the only way to select them from the map.
+   */
+  const displayNodes = useMemo<Node[]>(() => {
+    if (!onNodeClick) return baseNodes;
+    return baseNodes.map((n) => {
+      if (n.type === 'shelfNode') {
+        return { ...n, data: { ...n.data, onCellClick: onNodeClick } };
       }
-
-      flowNodes.unshift({
-        id: "map-bg",
-        type: "default",
-        position: { x: mapX, y: mapY },
-        data: { label: null },
-        style: {
-          width: mapW,
-          height: mapH,
-          backgroundImage: `url('${cleanUrl}')`,
-          backgroundSize: "contain",
-          zIndex: -11,
-          pointerEvents: 'none',
-          backgroundColor: 'transparent',
-          border: 'none',
-        },
-        draggable: false,
-        selectable: false,
-      });
-    }
-
-    // 2. SETUP EDGES & PATH HIGHLIGHTING
-    let activeEdgePairs = new Set<string>();
-    let virtualEdges: Edge[] = [];
-
-    if (solution && solution.routes && solution.routes.length > 0) {
-      // Color palette for multiple vehicles
-      const vehicleColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2'];
-
-      solution.routes.forEach((route, routeIdx) => {
-        const routeSteps = route.steps || [];
-        const color = vehicleColors[routeIdx % vehicleColors.length];
-
-        console.log(`[RouteViz] Vehicle ${routeIdx + 1}: ${routeSteps.length} steps (color: ${color})`);
-
-        if (routeSteps.length > 0) {
-          for (let i = 0; i < routeSteps.length - 1; i++) {
-            const u = String(routeSteps[i].node_id);
-            const v = String(routeSteps[i + 1].node_id);
-
-            activeEdgePairs.add(`${u}-${v}`);
-            activeEdgePairs.add(`${v}-${u}`);
-
-            // Check if this edge exists in the DB edges
-            const existsInDB = dbEdges.some(e =>
-              (String(e.node_a_id) === u && String(e.node_b_id) === v) ||
-              (String(e.node_a_id) === v && String(e.node_b_id) === u)
-            );
-
-            // If it DOESN'T exist in DB, create a virtual path edge so the user still sees it!
-            if (!existsInDB) {
-              console.warn(`[RouteViz] Virtual segment created: ${u} -> ${v}`);
-              virtualEdges.push({
-                id: `virtual-${routeIdx}-${u}-${v}`,
-                source: u,
-                target: v,
-                animated: true,
-                style: { stroke: color, strokeWidth: 5, strokeDasharray: '10 5' },
-                markerEnd: { type: MarkerType.ArrowClosed, color },
-                type: 'straight'
-              });
-            }
-          }
-        }
-      });
-    }
-
-    // Map DB Edges
-    const flowEdges: Edge[] = dbEdges.map(e => {
-      const u = String(e.node_a_id);
-      const v = String(e.node_b_id);
-      const isActive = activeEdgePairs.has(`${u}-${v}`) || activeEdgePairs.has(`${v}-${u}`);
-
-      return {
-        id: `e${u}-${v}`,
-        source: u,
-        target: v,
-        animated: true,
-        style: {
-          stroke: isActive ? '#2563eb' : '#3b82f6',
-          strokeWidth: isActive ? 5 : 2,
-          strokeDasharray: isActive ? undefined : '5,5',
-          opacity: isActive ? 1 : 0.6
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: isActive ? '#2563eb' : '#3b82f6'
-        },
-        type: 'straight'
-      };
+      return n;
     });
+  }, [baseNodes, onNodeClick]);
 
-    setNodes(flowNodes);
-    setEdges([...flowEdges, ...virtualEdges]);
+  // ── Node click handler (for waypointNode / depot / conveyor) ─────────────
 
-  }, [isOpen, inline, dbNodes, dbEdges, onNodeClick, map_url]);
+  const handleNodeClick = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      if (!onNodeClick || node.id === 'map-background') return;
+      // ShelfNode cell clicks are handled by onCellClick above;
+      // clicking the shelf body itself selects the shelf node.
+      const numericId = parseInt(node.id, 10);
+      if (!isNaN(numericId)) onNodeClick(numericId);
+    },
+    [onNodeClick],
+  );
+
+  // ── Shared canvas ─────────────────────────────────────────────────────────
+
+  const canvas = (
+    <ReactFlow
+      nodes={displayNodes}
+      edges={displayEdges}
+      nodeTypes={NODE_TYPES}
+      edgeTypes={EDGE_TYPES}
+      onNodeClick={onNodeClick ? handleNodeClick : undefined}
+      fitView
+      minZoom={0.05}
+      maxZoom={4}
+      panOnScroll
+      panOnDrag
+      nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable={!!onNodeClick}
+      defaultEdgeOptions={{ type: 'animatedEdge' }}
+    >
+      <Background
+        color={theme === 'dark' ? '#1e293b' : '#cbd5e1'}
+        gap={20}
+        size={1}
+        variant={BackgroundVariant.Dots}
+      />
+      <Controls />
+    </ReactFlow>
+  );
+
+  // ── Early return guards ───────────────────────────────────────────────────
 
   if (!isOpen && !inline) return null;
+
+  // ── Inline mode ───────────────────────────────────────────────────────────
 
   if (inline) {
     return (
       <div className="flex-1 w-full h-full bg-[#f8fafc] dark:bg-[#09090b] relative z-0">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onNodeClick={handleNodeClick}
-          fitView
-          minZoom={0.05}
-          maxZoom={4}
-          panOnScroll
-          panOnDrag
-          defaultEdgeOptions={{ type: 'straight' }}
-        >
-          <Background color={theme === "dark" ? "#1e293b" : "#cbd5e1"} gap={20} size={1} variant={BackgroundVariant.Dots} />
-        </ReactFlow>
-        
-        {/* Helper Badge */}
-        {!solution && dbNodes.length > 0 && (
+        {graphLoading && (
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <Loader2 size={24} className="animate-spin text-blue-500" />
+          </div>
+        )}
+
+        {canvas}
+
+        {!solution && baseNodes.length > 0 && (
           <div className="absolute top-4 right-4 bg-white/90 dark:bg-[#121214]/90 backdrop-blur-sm border border-gray-200 dark:border-white/10 px-3 py-1.5 rounded-lg shadow-sm text-[10px] font-bold text-gray-500 dark:text-gray-400 pointer-events-none z-10 flex items-center gap-2">
             <MapIcon size={12} className="text-blue-500" />
             LIVE GRAPH PREVIEW
@@ -279,6 +328,8 @@ const RouteVisualizer: React.FC<RouteVisualizerProps> = ({
       </div>
     );
   }
+
+  // ── Modal mode ────────────────────────────────────────────────────────────
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 sm:p-8">
@@ -296,61 +347,63 @@ const RouteVisualizer: React.FC<RouteVisualizerProps> = ({
                 <span className="text-[10px] bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-400 px-2 py-0.5 rounded font-mono uppercase">
                   {solution ? solution.summary : 'Preview Mode'}
                 </span>
-                {isPathProcessing && (
+                {graphLoading && (
                   <span className="flex items-center gap-1 text-[10px] text-blue-600 font-bold animate-pulse">
-                    <Loader2 size={10} className="animate-spin" /> CALCULATING...
+                    <Loader2 size={10} className="animate-spin" /> LOADING...
                   </span>
                 )}
               </div>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-gray-200 dark:bg-white/10 rounded-full transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-200 dark:bg-white/10 rounded-full transition-colors"
+          >
             <X size={20} className="text-gray-500 dark:text-gray-400" />
           </button>
         </div>
 
-        {/* Map Canvas */}
+        {/* Canvas */}
         <div className="flex-1 bg-gray-100 dark:bg-white/5 relative">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={handleNodeClick}
-            fitView
-            minZoom={0.05}
-            defaultEdgeOptions={{ type: 'straight' }}
-          >
-            <Background color={theme === "dark" ? "#1e293b" : "#cbd5e1"} gap={20} size={1} variant={BackgroundVariant.Dots} />
+          {canvas}
 
-            {/* Legend & Instructions */}
-            <div className="absolute bottom-4 left-4 flex flex-col gap-2">
-              <div className="bg-white dark:bg-[#121214]/90 backdrop-blur-sm p-3 rounded-xl shadow-sm border border-gray-200 dark:border-white/10 text-[10px] space-y-2 pointer-events-none">
-                <p className="font-bold text-gray-900 dark:text-white uppercase tracking-tight">Legend</p>
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-blue-600 border border-white"></div> <span>Interactive Node</span></div>
-                <div className="flex items-center gap-2"><div className="w-6 h-1 bg-blue-600"></div> <span>Assigned Path</span></div>
-                <div className="flex items-center gap-2"><div className="w-6 h-1 border-b border-blue-600 border-dashed"></div> <span>Virtual Segment</span></div>
+          {/* Legend */}
+          <div className="absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-none">
+            <div className="bg-white dark:bg-[#121214]/90 backdrop-blur-sm p-3 rounded-xl shadow-sm border border-gray-200 dark:border-white/10 text-[10px] space-y-2">
+              <p className="font-bold text-gray-900 dark:text-white uppercase tracking-tight">Legend</p>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-blue-600 border border-white" />
+                <span className="text-gray-600 dark:text-gray-400">Interactive Node</span>
               </div>
-
-              {instruction ? (
-                <div className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow-lg text-xs font-bold animate-bounce pointer-events-none">
-                  👉 {instruction}
-                </div>
-              ) : onNodeClick && (
-                <div className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow-lg text-xs font-bold animate-bounce pointer-events-none">
-                  👉 Click any blue node to preview route
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-1 bg-blue-600" />
+                <span className="text-gray-600 dark:text-gray-400">Assigned Path</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-px border-b border-blue-600 border-dashed" />
+                <span className="text-gray-600 dark:text-gray-400">Virtual Segment</span>
+              </div>
             </div>
-          </ReactFlow>
+
+            {instruction ? (
+              <div className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow-lg text-xs font-bold">
+                {instruction}
+              </div>
+            ) : onNodeClick ? (
+              <div className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow-lg text-xs font-bold">
+                Click any node to preview route
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {/* Footer */}
         <div className="h-16 border-t border-gray-100 dark:border-white/5 flex items-center justify-between px-6 bg-white dark:bg-[#121214] gap-3">
           <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
             <CheckSquare size={14} className="text-gray-300 dark:text-gray-600" />
-            <span>{onNodeClick ? 'Showing live simulation path' : 'Reviewing optimized fleet solution'}</span>
+            <span>
+              {onNodeClick ? 'Showing live simulation path' : 'Reviewing optimized fleet solution'}
+            </span>
           </div>
           <button
             onClick={onClose}

@@ -121,7 +121,8 @@ const ShelfNode = ({ data, selected, isConnectable }: NodeProps) => {
                 >
                 {cells.map((cell) => {
                   const isDimmed = activeLevelId !== null && cell.level_id !== activeLevelId;
-                  
+                  const onCellClick: ((id: number) => void) | undefined = data.onCellClick;
+
                   // Map levelNum to grid row (top-down)
                   // Level 1 should be the last row, Level maxLvl should be the first row
                   const gridRow = maxLvl - cell.levelNum + 1;
@@ -131,14 +132,16 @@ const ShelfNode = ({ data, selected, isConnectable }: NodeProps) => {
                     <div
                       key={cell.id}
                       title={`${cell.alias}${cell.occupancyStatus && cell.occupancyStatus !== 'empty' ? ` [${cell.occupancyStatus.toUpperCase()}]` : ''}`}
-                      style={{ 
-                        gridRow, 
-                        gridColumn: gridCol 
+                      style={{
+                        gridRow,
+                        gridColumn: gridCol
                       }}
+                      onClick={onCellClick ? (e) => { e.stopPropagation(); onCellClick(cell.id); } : undefined}
                       className={`
                         w-6 h-5 rounded-[3px] flex items-center justify-center
                         text-[7px] font-bold font-mono border
                         transition-all duration-200
+                        ${onCellClick ? 'cursor-pointer hover:ring-2 hover:ring-white/60 hover:scale-110' : ''}
                         ${
                           isDimmed
                             ? 'bg-purple-900/20 border-purple-900/25 text-purple-800/40'

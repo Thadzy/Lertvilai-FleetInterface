@@ -325,14 +325,14 @@ async def _batch_resolve_nodes_with_coords(
 
     id_csv = ",".join(str(n) for n in sorted(node_ids))
     fallback: dict[int, dict[str, Any]] = {
-        n: {"alias": f"node-{n}", "x": 0.0, "y": 0.0} for n in node_ids
+        n: {"alias": f"node-{n}", "x": 0.0, "y": 0.0, "yaw": 0.0} for n in node_ids
     }
 
     try:
         response = await client.get(
             f"{POSTGREST_URL}/wh_nodes_view",
             params={
-                "select": "id,alias,x,y",
+                "select": "id,alias,x,y,yaw",
                 "graph_id": f"eq.{graph_id}",
                 "id": f"in.({id_csv})",
             },
@@ -348,6 +348,7 @@ async def _batch_resolve_nodes_with_coords(
                 "alias": row.get("alias") or f"node-{nid}",
                 "x": float(row.get("x") or 0.0),
                 "y": float(row.get("y") or 0.0),
+                "yaw": float(row.get("yaw") or 0.0),
             }
         # Fill in any IDs that were absent from the response
         for nid in node_ids:

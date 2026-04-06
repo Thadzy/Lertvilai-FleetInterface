@@ -196,14 +196,14 @@ async def _receive_topics(ws):
 _active_path_task: asyncio.Task | None = None
 
 
-async def _publish_travel(ws, alias: str, x: float, y: float) -> None:
+async def _publish_travel(ws, alias: str, x: float, y: float, th: float = 0.0) -> None:
     
     # Construct the internal command object
     # Including 'th' and 'method' keys as identified during manual debugging
     inner_cmd = {
         "x": round(float(x), 4),
         "y": round(float(y), 4),
-        "th": 0.0,
+        "th": round(float(th), 4),
         "method": "goto"
     }
     
@@ -251,10 +251,11 @@ async def _execute_path_waypoints(
         alias: str = str(waypoint.get("alias") or "")
         target_x: float = _safe_float(waypoint.get("x"), 0.0)
         target_y: float = _safe_float(waypoint.get("y"), 0.0)
+        target_th: float = _safe_float(waypoint.get("yaw"), 0.0)
 
         # --- Publish this waypoint ---
-        await _publish_travel(ws, alias, target_x, target_y)
-        log.info(f"[Path] Waypoint {idx}/{total}: target=({target_x:.3f}, {target_y:.3f})")
+        await _publish_travel(ws, alias, target_x, target_y, target_th)
+        log.info(f"[Path] Waypoint {idx}/{total}: target=({target_x:.3f}, {target_y:.3f}, {target_th:.3f})")
 
         # --- Wait until the robot arrives (closed-loop check) ---
         deadline: float = time.time() + WAYPOINT_TIMEOUT
@@ -341,8 +342,9 @@ async def _command_relay(ws):
                 target_alias = str(msg_payload.get("target_alias") or "")
                 target_x = _safe_float(msg_payload.get("target_x"), 0.0)
                 target_y = _safe_float(msg_payload.get("target_y"), 0.0)
-                last_travel_target = {"alias": target_alias, "x": target_x, "y": target_y}
-                await _publish_travel(ws, target_alias, target_x, target_y)
+                target_th = _safe_float(msg_payload.get("target_yaw"), 0.0)
+                last_travel_target = {"alias": target_alias, "x": target_x, "y": target_y, "th": target_th}
+                await _publish_travel(ws, target_alias, target_x, target_y, target_th)
                 continue
 
             # ── Multi-waypoint path execution (closed-loop) ───────────────────
@@ -416,6 +418,7 @@ async def _command_relay(ws):
                         str(last_travel_target.get("alias", "")),
                         _safe_float(last_travel_target.get("x", 0.0)),
                         _safe_float(last_travel_target.get("y", 0.0)),
+                        _safe_float(last_travel_target.get("th", 0.0)),
                     )
                     log.info("Applied RESUME: re-sent previous travel target")
                     continue

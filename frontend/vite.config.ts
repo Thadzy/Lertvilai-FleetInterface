@@ -1,18 +1,25 @@
 /// <reference types="vitest" />
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react-swc'
 import tailwindcss from '@tailwindcss/vite'
+import path from 'path'
 
 // https://vite.dev/config/
-// GATEWAY_URL — override via .env.local to point at a remote robot
+// All env vars are read from the root .env (one directory up from frontend/)
+// GATEWAY_URL — set in root .env to point at a remote robot
 // e.g. GATEWAY_URL=http://10.61.6.87:8080
-const gatewayUrl = process.env.GATEWAY_URL ?? 'http://127.0.0.1:8080';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const rootDir = path.resolve(__dirname, '..')
+  const env = loadEnv(mode, rootDir, '')
+  const gatewayUrl = env.GATEWAY_URL ?? 'http://127.0.0.1:8080'
+
+  return {
   plugins: [
     react(),
     tailwindcss()
   ],
+  envDir: rootDir,
   server: {
     proxy: {
       '/api/vrp': {
@@ -44,4 +51,5 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
   },
+  }
 })

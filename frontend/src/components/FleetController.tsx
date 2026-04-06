@@ -161,7 +161,9 @@ RobotNode.displayName = "RobotNode";
  */
 const AutoFitView = memo(({ trigger }: { trigger: boolean }) => {
   const { fitView } = useReactFlow();
-  const prev = useRef(false);
+  // Initialize from current trigger so we don't fire fitView on mount when
+  // simulation routes are already loaded (e.g. switching back to Fleet tab).
+  const prev = useRef(trigger);
   useEffect(() => {
     if (trigger && !prev.current) {
       setTimeout(() => fitView({ padding: 0.15, duration: 800 }), 200);
