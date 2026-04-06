@@ -481,6 +481,18 @@ class SendRequestOrderInput:
     request_alias: RequestAliasInput
 
 
+@strawberry.input
+class AssignmentInput:
+    robot_name: str
+    route_node_aliases: list[str]
+
+
+@strawberry.input
+class WarehouseOrderInput:
+    assignments: list[AssignmentInput]
+    request_aliases: list[RequestAliasInput]
+
+
 # ── GraphQL Schema ────────────────────────────────────────────────────────────
 @strawberry.type
 class Query:
@@ -760,6 +772,70 @@ class Mutation:
         except Exception as exc:
             log.warning(f"[clearRobotError] Redis publish failed for {robot_name}: {exc}")
         return await fetch_robot(robot_name)
+
+    @strawberry.mutation
+    async def send_warehouse_order(self, warehouse_order: WarehouseOrderInput) -> WarehouseOrderResult:
+        """Process a batch warehouse order for multiple robots."""
+        success_count = 0
+        total_robots = len(warehouse_order.assignments)
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                for asn in warehouse_order.assignments:
+                    robot_name = asn.robot_name
+                    aliases = asn.route_node_aliases
+                    
+                    if not aliases:
+                        continue
+
+                    # 1. Resolve all aliases to IDs and Coords
+                    log.info(f"[WarehouseOrder] Processing {robot_name} with {len(aliases)} nodes")
+                    
+                    # Fetch nodes to get IDs and Coords in one go
+                    id_list = []
+                    alias_to_id = {}
+                    
+                    # Lookup IDs for these aliases
+                    for alias in aliases:
+                        resp = await client.get(
+                            f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes",
+                            params={"alias": f"eq.{alias}", "select": "id"},
+                            headers={"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"}
+                        )
+                        if resp.status_code == 200 and resp.json():
+                            node_id = resp.json()[0]["id"]
+                            id_list.append(int(node_id))
+                            alias_to_id[alias] = int(node_id)
+
+                    # 2. Get full coordinate data
+                    if id_list:
+                        node_map = await resolve_nodes(client, DEFAULT_GRAPH_ID, set(id_list))
+                        waypoints = []
+                        for alias in aliases:
+                            nid = alias_to_id.get(alias)
+                            if nid and nid in node_map:
+                                waypoints.append(node_map[nid])
+                        
+                        # 3. Publish to Redis as an 'execute_path' batch command
+                        channel = f"robot:{robot_name}:command"
+                        payload = json.dumps({
+                            "op": "execute_path",
+                            "waypoints": waypoints
+                        })
+                        await with_redis(f"publish:{channel}", lambda r: r.publish(channel, payload))
+                        success_count += 1
+                        log.info(f"[WarehouseOrder] Successfully dispatched path to {robot_name}")
+
+            return WarehouseOrderResult(
+                success=True,
+                message=f"Successfully dispatched orders to {success_count}/{total_robots} robots."
+            )
+        except Exception as exc:
+            log.error(f"[WarehouseOrder] Error: {exc}")
+            return WarehouseOrderResult(
+                success=False,
+                message=f"Failed to process warehouse order: {exc}"
+            )
 
     @strawberry.mutation
     async def send_request_order(self, request_order: SendRequestOrderInput) -> JobOrderResult:
