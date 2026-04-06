@@ -16,6 +16,7 @@ import json
 import os
 import asyncio
 import logging
+import httpx
 from contextlib import asynccontextmanager
 from enum import Enum
 from typing import AsyncGenerator, Optional
@@ -627,21 +628,26 @@ class Mutation:
                     node_id = order.target_node_id
                     if not node_id and order.target_node_alias:
                         # Find ID by alias
-                        resp = await client.get(
-                            f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes",
-                            params={"alias": f"eq.{order.target_node_alias}", "select": "id"},
-                            headers={"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"}
-                        )
+                        url = f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes"
+                        params = {"alias": f"eq.{order.target_node_alias}", "select": "id"}
+                        headers = {"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"}
+                        log.info(f"[DEBUG] Looking up node by alias: {order.target_node_alias} at {url}")
+                        resp = await client.get(url, params=params, headers=headers)
                         if resp.status_code == 200 and resp.json():
                             node_id = resp.json()[0]["id"]
+                            log.info(f"[DEBUG] Found node_id: {node_id} for alias: {order.target_node_alias}")
+                        else:
+                            log.warning(f"[DEBUG] Node lookup failed. Status: {resp.status_code}, Body: {resp.text}")
                     
                     if node_id:
+                        log.info(f"[DEBUG] Fetching coords for node_id: {node_id}")
                         node_map = await resolve_nodes(client, DEFAULT_GRAPH_ID, {int(node_id)})
                         node_data = node_map.get(int(node_id))
                         if node_data:
                             target_x = node_data["x"]
                             target_y = node_data["y"]
                             target_yaw = node_data.get("yaw", 0.0)
+                            log.info(f"[DEBUG] Resolved coords: x={target_x}, y={target_y}, th={target_yaw}")
             except Exception as exc:
                 log.error(f"Failed to resolve coordinates for travel: {exc}")
 
