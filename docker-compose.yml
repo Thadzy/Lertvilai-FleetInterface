@@ -262,25 +262,41 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-#   robot_simulator:
-#     build: ./robot_simulator
-#     ports:
-#       - "9090:9090"
-#     command: >
-#       ros2 launch robot_sim sim.launch.py publish_rate:=10.0 nav_speed:=1.0 port:=9090
+  robot_simulator:
+    build: ./robot_simulator
+    ports:
+      - "9090:9090"
+    command: >
+      ros2 launch robot_sim sim.launch.py publish_rate:=10.0 nav_speed:=1.0 port:=9090
 
   robot_bridge:
     build: ./robot_bridge
     environment:
-      ROBOT_NAME: ${ROBOT_NAME:-FACOBOT}
-      ROBOT_HOST: ${ROBOT_HOST:-10.61.6.87}
-      ROBOT_PORT: ${ROBOT_PORT:-9090}
+      ROBOT_NAME: LOCALBOT
+      ROBOT_HOST: 10.61.6.87
+      ROBOT_PORT: "9090"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       HEARTBEAT_TTL: "10"
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  robot_bridge_sim:
+    build: ./robot_bridge
+    environment:
+      ROBOT_NAME: SIMBOT
+      ROBOT_HOST: robot_simulator
+      ROBOT_PORT: "9090"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      HEARTBEAT_TTL: "10"
+    depends_on:
+      redis:
+        condition: service_healthy
+      robot_simulator:
+        condition: service_started
     restart: unless-stopped
 
   frontend:

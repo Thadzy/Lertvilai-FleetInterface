@@ -76,41 +76,15 @@ replace_env SUPABASE_PUBLIC_URL    "http://${LOCAL_IP}:8000"
 replace_env VITE_SUPABASE_URL      "http://${LOCAL_IP}:8000"
 replace_env VITE_SUPABASE_ANON_KEY "$ANON_KEY"
 
-# Robot type selection
-echo "Select robot type:"
-echo "  1) SIMBOT    (simulator, default)"
-echo "  2) FACOBOT   (external robot at 10.61.6.87)"
-echo "  3) CUSTOM    (enter IP manually)"
-read -rp "Enter choice [1/2/3]: " robot_choice
+# Multi-Robot Configuration (Dynamic Fleet)
+# Define both a simulator and a real robot so the user can switch in the UI.
+ROBOTS_CONFIG="{\"SIMBOT\": {\"host\": \"robot_simulator\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}, \"LOCALBOT\": {\"host\": \"10.61.6.87\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
+replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
+replace_env ROBOT_NAME "SIMBOT"
+replace_env ROBOT_HOST "robot_simulator"
 
-case "$robot_choice" in
-  2)
-    facobot_host="10.61.6.87"
-    ROBOTS_CONFIG="{\"FACOBOT\": {\"host\": \"${facobot_host}\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
-    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
-    replace_env ROBOT_NAME "FACOBOT"
-    replace_env ROBOT_HOST "${facobot_host}"
-    sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
-    echo "Robot: FACOBOT (${facobot_host})"
-    ;;
-  3)
-    read -rp "Enter Robot host IP [${LOCAL_IP}]: " custom_host
-    custom_host="${custom_host:-$LOCAL_IP}"
-    ROBOTS_CONFIG="{\"CUSTOM_ROBOT\": {\"host\": \"${custom_host}\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
-    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
-    replace_env ROBOT_NAME "CUSTOM_ROBOT"
-    replace_env ROBOT_HOST "${custom_host}"
-    sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
-    echo "Robot: CUSTOM_ROBOT (${custom_host})"
-    ;;
-  *)
-    ROBOTS_CONFIG='{"SIMBOT": {"host": "robot_simulator", "port": 9090, "cell_heights": [0.653, 1.073, 1.493, 1.913]}}'
-    replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
-    replace_env ROBOT_NAME "SIMBOT"
-    replace_env ROBOT_HOST "robot_simulator"
-    echo "Robot: SIMBOT (simulator)"
-    ;;
-esac
+echo "Fleet configured with both SIMBOT and LOCALBOT (10.61.6.87)."
+echo "You can switch between them in the UI Robot Selector."
 
 # GraphQL IDE selection
 echo ""
