@@ -348,8 +348,24 @@ async def fetch_robot(name: str) -> Robot:
 
 
 async def fetch_all_robots() -> list[Robot]:
-    robot_names = list(ROBOTS_CONFIG.keys())
-    return [await fetch_robot(name) for name in robot_names]
+    # 1. Start with static config robots
+    robot_names = set(ROBOTS_CONFIG.keys())
+    
+    # 2. Discover dynamic robots from Redis heartbeats
+    try:
+        r = await get_redis()
+        # Find all keys matching the heartbeat pattern
+        keys = await r.keys("robot:*:heartbeat")
+        for key in keys:
+            # Extract name: "robot:NAME:heartbeat" -> "NAME"
+            parts = key.split(":")
+            if len(parts) >= 2:
+                robot_names.add(parts[1])
+    except Exception as exc:
+        log.error(f"Failed to discover robots from Redis: {exc}")
+
+    # 3. Fetch full state for all identified robots
+    return [await fetch_robot(name) for name in sorted(list(robot_names))]
 
 
 async def _dispatch_execute_path_and_wait(

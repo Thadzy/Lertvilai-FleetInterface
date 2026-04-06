@@ -80,15 +80,15 @@ replace_env SUPABASE_PUBLIC_URL    "http://${LOCAL_IP}:8000"
 replace_env VITE_SUPABASE_URL      "http://${LOCAL_IP}:8000"
 replace_env VITE_SUPABASE_ANON_KEY "$ANON_KEY"
 
-# Multi-Robot Configuration (Dynamic Fleet)
-# Define both a simulator and a real robot so the user can switch in the UI.
-ROBOTS_CONFIG="{\"SIMBOT\": {\"host\": \"robot_simulator\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}, \"LOCALBOT\": {\"host\": \"10.61.6.87\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
+# Multi-Robot Configuration (Robust Fleet)
+# FACOBOT: The physical robot at the target IP
+# SIMBOT: The simulator for testing
+ROBOTS_CONFIG="{\"SIMBOT\": {\"host\": \"robot_simulator\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}, \"FACOBOT\": {\"host\": \"10.61.6.87\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
 replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
-replace_env ROBOT_NAME "SIMBOT"
-replace_env ROBOT_HOST "robot_simulator"
+replace_env ROBOT_NAME "FACOBOT"
+replace_env ROBOT_HOST "10.61.6.87"
 
-echo "Fleet configured with both SIMBOT and LOCALBOT (10.61.6.87)."
-echo "You can switch between them in the UI Robot Selector."
+echo "Fleet configured: SIMBOT (Simulator) & FACOBOT (10.61.6.87)."
 
 # GraphQL IDE selection
 echo ""
