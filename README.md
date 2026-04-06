@@ -50,6 +50,18 @@ Once the containers are healthy, access the system via:
 
 ---
 
+## 🌐 Team Collaboration & LAN Access
+
+WCS is designed for multi-user, real-time collaboration. To share the system with your team:
+
+1.  **The URL**: Provide your team with your host IP: `http://10.61.6.33`
+2.  **Network**: All users must be on the same local network (VLAN/Wi-Fi).
+3.  **Real-time Updates**: Map changes, robot movements, and system logs are synced across all connected browsers instantly via **Supabase Realtime** and **MQTT**.
+
+> **Pro Tip**: To prevent the IP from changing, it is highly recommended to set a **Static IP** for the host machine in your Router settings.
+
+---
+
 ## 🔍 Post-Installation Debugging (If you can't access the site)
 
 If `http://<YOUR_IP>` is not loading:
