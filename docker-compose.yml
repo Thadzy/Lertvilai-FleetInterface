@@ -36,6 +36,7 @@ services:
       # WCS warehouse graph (pgRouting must be enabled first — runs after image's 00-extension.sql creates the extensions schema)
       - ./volumes/db/init/00-extensions.sql:/docker-entrypoint-initdb.d/migrations/01-pgrouting.sql:ro
       - ./db_schema/graph.sql:/docker-entrypoint-initdb.d/migrations/98-graph.sql:ro
+      - ./volumes/db/init/99-storage-setup.sql:/docker-entrypoint-initdb.d/migrations/99-storage.sql:ro
     restart: unless-stopped
 
   rest:
@@ -289,6 +290,8 @@ services:
         VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
         VITE_SUPABASE_ANON_KEY: ${ANON_KEY}
     ports:
+      # Use 80:80 for clean LAN access (http://10.61.6.87)
+      # You can change to 5173:80 if you prefer http://10.61.6.87:5173
       - "80:80"
     environment:
       FLEET_GATEWAY_URL: http://fleet_gateway:8000
