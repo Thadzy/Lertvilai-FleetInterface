@@ -106,7 +106,8 @@ CREATE OR REPLACE FUNCTION public.wh_create_waypoint(
   p_x        real,
   p_y        real,
   p_alias    text DEFAULT NULL,
-  p_tag_id   text DEFAULT NULL
+  p_tag_id   text DEFAULT NULL,
+  p_yaw      real DEFAULT 0.0
 )
 RETURNS bigint
 LANGUAGE plpgsql
@@ -130,8 +131,8 @@ BEGIN
   RETURNING id INTO v_id;
 
   -- Create subtype row
-  INSERT INTO public.wh_waypoint_nodes (id, x, y)
-  VALUES (v_id, p_x, p_y);
+  INSERT INTO public.wh_waypoint_nodes (id, x, y, yaw)
+  VALUES (v_id, p_x, p_y, p_yaw);
 
   RETURN v_id;
 
@@ -155,7 +156,8 @@ CREATE OR REPLACE FUNCTION public.wh_create_conveyor(
   p_y        real,
   p_height   real,
   p_alias    text DEFAULT NULL,
-  p_tag_id   text DEFAULT NULL
+  p_tag_id   text DEFAULT NULL,
+  p_yaw      real DEFAULT 0.0
 )
 RETURNS bigint
 LANGUAGE plpgsql
@@ -185,8 +187,8 @@ BEGIN
   RETURNING id INTO v_id;
 
   -- Create subtype row
-  INSERT INTO public.wh_conveyor_nodes (id, x, y, height)
-  VALUES (v_id, p_x, p_y, p_height);
+  INSERT INTO public.wh_conveyor_nodes (id, x, y, height, yaw)
+  VALUES (v_id, p_x, p_y, p_height, p_yaw);
 
   RETURN v_id;
 END;
@@ -598,7 +600,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.wh_update_node_position(
   p_node_id bigint,
   p_x       real,
-  p_y       real
+  p_y       real,
+  p_yaw     real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -622,19 +625,19 @@ BEGIN
   -- Update based on type
   IF v_node_type = 'depot' THEN
     UPDATE public.wh_depot_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
   ELSIF v_node_type = 'waypoint' THEN
     UPDATE public.wh_waypoint_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
   ELSIF v_node_type = 'conveyor' THEN
     UPDATE public.wh_conveyor_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
@@ -671,12 +674,13 @@ RETURNS TABLE (
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT id, alias, tag_id, type, x, y, height
+  SELECT id, alias, tag_id, type, x, y, yaw, height
   FROM public.wh_nodes_view
   WHERE graph_id = p_graph_id
     AND alias = p_alias;
@@ -696,6 +700,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE plpgsql
@@ -726,6 +731,7 @@ BEGIN
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_aliases) WITH ORDINALITY AS input(alias_val, ord)
   JOIN public.wh_nodes_view nv
@@ -747,12 +753,13 @@ RETURNS TABLE (
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT id, alias, tag_id, type, x, y, height
+  SELECT id, alias, tag_id, type, x, y, yaw, height
   FROM public.wh_nodes_view
   WHERE graph_id = p_graph_id
     AND tag_id = p_tag_id;
@@ -793,6 +800,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
@@ -805,6 +813,7 @@ AS $$
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_node_ids) WITH ORDINALITY AS input(node_id, ord)
   JOIN public.wh_nodes_view nv ON nv.id = input.node_id
@@ -825,6 +834,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE plpgsql
@@ -855,6 +865,7 @@ BEGIN
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_node_ids) WITH ORDINALITY AS input(node_id, ord)
   JOIN public.wh_nodes_view nv ON nv.id = input.node_id
@@ -1462,6 +1473,7 @@ RETURNS TABLE(
   graph_id bigint,
   x real,
   y real,
+  yaw real,
   height real,
   shelf_id bigint,
   level_id bigint,
@@ -1477,6 +1489,7 @@ AS $$
     graph_id,
     x,
     y,
+    yaw,
     height,
     shelf_id,
     level_id,
@@ -1689,7 +1702,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.wh_update_depot_position(
   p_graph_id bigint,
   p_x real,
-  p_y real
+  p_y real,
+  p_yaw real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -1717,18 +1731,18 @@ BEGIN
 
   -- Update depot position
   UPDATE public.wh_depot_nodes
-  SET x = p_x, y = p_y
+  SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
   WHERE id = v_depot_id;
 END;
 $$;
 
 -- Get depot position for a graph
 CREATE OR REPLACE FUNCTION public.wh_get_depot_position(p_graph_id bigint)
-RETURNS TABLE(x real, y real)
+RETURNS TABLE(x real, y real, yaw real)
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT d.x, d.y
+  SELECT d.x, d.y, d.yaw
   FROM public.wh_nodes n
   JOIN public.wh_depot_nodes d ON d.id = n.id
   WHERE n.graph_id = p_graph_id
@@ -1790,7 +1804,8 @@ CREATE OR REPLACE FUNCTION public.wh_update_node_position(
   p_graph_id bigint,
   p_alias    text,
   p_x        real,
-  p_y        real
+  p_y        real,
+  p_yaw      real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -1810,7 +1825,7 @@ BEGIN
       USING ERRCODE = 'foreign_key_violation';
   END IF;
 
-  PERFORM public.wh_update_node_position(v_node_id, p_x, p_y);
+  PERFORM public.wh_update_node_position(v_node_id, p_x, p_y, p_yaw);
 END;
 $$;
 

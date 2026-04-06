@@ -80,8 +80,8 @@ BEGIN
     PERFORM record_test('1.3 Depot alias correct', 'FAIL', 'Depot alias not __depot__');
   END IF;
 
-  -- Test 1.4: Depot has coordinates (auto-initialized to 0,0)
-  IF EXISTS (SELECT 1 FROM wh_depot_nodes WHERE id = v_depot_id AND x = 0 AND y = 0) THEN
+  -- Test 1.4: Depot has coordinates (auto-initialized to 0,0,0)
+  IF EXISTS (SELECT 1 FROM wh_depot_nodes WHERE id = v_depot_id AND x = 0 AND y = 0 AND yaw = 0) THEN
     PERFORM record_test('1.4 Depot coordinates initialized', 'PASS');
   ELSE
     PERFORM record_test('1.4 Depot coordinates initialized', 'FAIL');
@@ -149,19 +149,19 @@ BEGIN
   SELECT id INTO v_graph_id FROM wh_graphs WHERE name = 'test_graph_1';
 
   -- Test 3.1: Create waypoint
-  v_waypoint_id := wh_create_waypoint(v_graph_id, 5.0, 5.0, 'entrance');
+  v_waypoint_id := wh_create_waypoint(v_graph_id, 5.0, 5.0, 'entrance', p_yaw => 1.57);
   IF v_waypoint_id IS NOT NULL THEN
-    PERFORM record_test('3.1 Create waypoint', 'PASS', 'Waypoint ID: ' || v_waypoint_id);
+    PERFORM record_test('3.1 Create waypoint (with yaw)', 'PASS', 'Waypoint ID: ' || v_waypoint_id);
   ELSE
-    PERFORM record_test('3.1 Create waypoint', 'FAIL');
+    PERFORM record_test('3.1 Create waypoint (with yaw)', 'FAIL');
   END IF;
 
   -- Test 3.2: Create conveyor with height
-  v_conveyor_id := wh_create_conveyor(v_graph_id, 10.0, 5.0, 2.5, 'conv_1');
+  v_conveyor_id := wh_create_conveyor(v_graph_id, 10.0, 5.0, 2.5, 'conv_1'); -- test default yaw
   IF v_conveyor_id IS NOT NULL THEN
-    PERFORM record_test('3.2 Create conveyor', 'PASS', 'Conveyor ID: ' || v_conveyor_id);
+    PERFORM record_test('3.2 Create conveyor (default yaw)', 'PASS', 'Conveyor ID: ' || v_conveyor_id);
   ELSE
-    PERFORM record_test('3.2 Create conveyor', 'FAIL');
+    PERFORM record_test('3.2 Create conveyor (default yaw)', 'FAIL');
   END IF;
 
   -- Test 3.3: Create shelf
@@ -172,18 +172,18 @@ BEGIN
     PERFORM record_test('3.3 Create shelf', 'FAIL');
   END IF;
 
-  -- Test 3.4: Waypoint has coordinates
-  IF EXISTS (SELECT 1 FROM wh_waypoint_nodes WHERE id = v_waypoint_id AND x = 5.0 AND y = 5.0) THEN
-    PERFORM record_test('3.4 Waypoint coordinates correct', 'PASS');
+  -- Test 3.4: Waypoint has coordinates and yaw
+  IF EXISTS (SELECT 1 FROM wh_waypoint_nodes WHERE id = v_waypoint_id AND x = 5.0 AND y = 5.0 AND yaw = 1.57) THEN
+    PERFORM record_test('3.4 Waypoint coordinates and yaw correct', 'PASS');
   ELSE
-    PERFORM record_test('3.4 Waypoint coordinates correct', 'FAIL');
+    PERFORM record_test('3.4 Waypoint coordinates and yaw correct', 'FAIL');
   END IF;
 
-  -- Test 3.5: Conveyor has height
-  IF EXISTS (SELECT 1 FROM wh_conveyor_nodes WHERE id = v_conveyor_id AND height = 2.5) THEN
-    PERFORM record_test('3.5 Conveyor height correct', 'PASS');
+  -- Test 3.5: Conveyor has height and default yaw
+  IF EXISTS (SELECT 1 FROM wh_conveyor_nodes WHERE id = v_conveyor_id AND height = 2.5 AND yaw = 0.0) THEN
+    PERFORM record_test('3.5 Conveyor height and default yaw correct', 'PASS');
   ELSE
-    PERFORM record_test('3.5 Conveyor height correct', 'FAIL');
+    PERFORM record_test('3.5 Conveyor height and default yaw correct', 'FAIL');
   END IF;
 END $$;
 
@@ -314,22 +314,23 @@ DECLARE
   v_waypoint_id bigint;
   v_new_x real;
   v_new_y real;
+  v_new_yaw real;
 BEGIN
   SELECT id INTO v_waypoint_id
   FROM wh_nodes
   WHERE alias = 'entrance' AND graph_id = (SELECT id FROM wh_graphs WHERE name = 'test_graph_1');
 
-  -- Test 6.1: Update waypoint position
-  PERFORM wh_update_node_position(v_waypoint_id, 6.0, 6.0);
+  -- Test 6.1: Update waypoint position and yaw
+  PERFORM wh_update_node_position(v_waypoint_id, 6.0, 6.0, 3.14);
 
-  SELECT x, y INTO v_new_x, v_new_y
+  SELECT x, y, yaw INTO v_new_x, v_new_y, v_new_yaw
   FROM wh_waypoint_nodes
   WHERE id = v_waypoint_id;
 
-  IF v_new_x = 6.0 AND v_new_y = 6.0 THEN
-    PERFORM record_test('6.1 Update node position', 'PASS');
+  IF v_new_x = 6.0 AND v_new_y = 6.0 AND v_new_yaw = 3.14 THEN
+    PERFORM record_test('6.1 Update node position and yaw', 'PASS');
   ELSE
-    PERFORM record_test('6.1 Update node position', 'FAIL', format('Got (%.1f, %.1f)', v_new_x, v_new_y));
+    PERFORM record_test('6.1 Update node position and yaw', 'FAIL', format('Got (%.1f, %.1f, %.1f)', v_new_x, v_new_y, v_new_yaw));
   END IF;
 
   -- Test 6.2: Update cell position should fail

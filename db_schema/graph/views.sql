@@ -12,6 +12,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     d.x,
     d.y,
+    d.yaw,
     NULL::real AS height,  -- conveyor-specific
     NULL::bigint AS shelf_id,  -- cell-specific
     NULL::bigint AS level_id,  -- cell-specific
@@ -30,6 +31,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     w.x,
     w.y,
+    w.yaw,
     NULL::real AS height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -48,6 +50,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     c.x,
     c.y,
+    c.yaw,
     c.height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -66,6 +69,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     s.x,
     s.y,
+    NULL::real AS yaw,
     NULL::real AS height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -84,6 +88,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     s.x,
     s.y,
+    NULL::real AS yaw,
     lv.height AS height,
     cn.shelf_id,
     cn.level_id,

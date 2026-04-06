@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS public.wh_depot_nodes (
   id bigint PRIMARY KEY REFERENCES public.wh_nodes(id) ON DELETE CASCADE,
   x real NOT NULL,
   y real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS public.wh_waypoint_nodes (
   id bigint PRIMARY KEY REFERENCES public.wh_nodes(id) ON DELETE CASCADE,
   x real NOT NULL,
   y real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS public.wh_conveyor_nodes (
   x real NOT NULL,
   y real NOT NULL,
   height real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

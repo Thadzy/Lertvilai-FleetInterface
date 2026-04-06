@@ -7,7 +7,7 @@ BEGIN
   PERFORM set_config('wh.graph_id', v_graph_id::text, false);  -- false = session
 END $$;
 
-SELECT wh_update_depot_position(current_setting('wh.graph_id')::bigint, 0.0, 3.672);
+SELECT wh_update_depot_position(current_setting('wh.graph_id')::bigint, 0.0, 3.672, 1.5708);
 SELECT wh_update_node_tag_id(current_setting('wh.graph_id')::bigint, '__depot__'::text, '5'::text);
 
 -- 2) Create level {653.0, 1073.0, 1493.0, 1913.0};
@@ -17,8 +17,8 @@ SELECT wh_create_level(current_setting('wh.graph_id')::bigint, 'L3', 1.650);
 -- SELECT wh_create_level(current_setting('wh.graph_id')::bigint, 'L4', 1.913);
 
 -- 3) Create conveyors ( No conveyors )
--- SELECT wh_create_conveyor(current_setting('wh.graph_id')::bigint, -3, 2, 1.0, 'I');
--- SELECT wh_create_conveyor(current_setting('wh.graph_id')::bigint, 8, 2, 1.2, 'O');
+-- SELECT wh_create_conveyor(current_setting('wh.graph_id')::bigint, -3, 2, 1.0, 'I', NULL, 1.5708);
+-- SELECT wh_create_conveyor(current_setting('wh.graph_id')::bigint, 8, 2, 1.2, 'O', NULL, 1.5708);
 
 
 
@@ -31,53 +31,53 @@ SELECT wh_create_level(current_setting('wh.graph_id')::bigint, 'L3', 1.650);
 --   p_tag_id   text DEFAULT NULL
 -- )
 
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 0.0, 'Q1'::text, '1'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 0.918, 'Q2'::text, '2'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 1.836, 'Q3'::text, '3'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 2.754, 'Q4'::text, '4'::text);
--- SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 3.672, 'Q5'::text, '5'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 0.0, 'Q6'::text, '6'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 0.918, 'Q7'::text, '7'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 1.836, 'Q8'::text, '8'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 2.754, 'Q9'::text, '9'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 3.672, 'Q10'::text, '10'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 0.0, 'Q11'::text, '11'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 0.918, 'Q12'::text, '12'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 1.836, 'Q13'::text, '13'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 2.754, 'Q14'::text, '14'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 3.672, 'Q15'::text, '15'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 0.0, 'Q16'::text, '16'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 0.918, 'Q17'::text, '17'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 1.836, 'Q18'::text, '18'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 2.754, 'Q19'::text, '19'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 3.672, 'Q20'::text, '20'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 0.0, 'Q21'::text, '21'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 0.918, 'Q22'::text, '22'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 1.836, 'Q23'::text, '23'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 2.754, 'Q24'::text, '24'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 3.672, 'Q25'::text, '25'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -1.357, 'Q140'::text, '140'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -2.275, 'Q71'::text, '71'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.114, -2.275, 'Q145'::text, '145'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -2.275, 'Q122'::text, '122'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -3.802, 'Q125'::text, '125'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -4.827, 'Q146'::text, '146'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -6.61, 'Q134'::text, '134'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -2.275, 'Q119'::text, '119'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -4.111, 'Q144'::text, '144'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.766, -4.822, 'Q133'::text, '133'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -3.193, 'Q124'::text, '124'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 7.189, -2.275, 'Q121'::text, '121'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 10.555, -2.275, 'Q108'::text, '108'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 13.0, -2.275, 'Q114'::text, '114'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -3.193, 'Q52'::text, '52'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -4.815, 'Q53'::text, '53'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.436, -2.275, 'Q64'::text, '64'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 3.817, -2.275, 'Q139'::text, '139'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -3.193, 'Q63'::text, '63'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.596, -2.275, 'Q59'::text, '59'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -2.477, 'Q65'::text, '65'::text);
-SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -4.111, 'Q58'::text, '58'::text);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 0.0, 'Q1'::text, '1'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 0.918, 'Q2'::text, '2'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 1.836, 'Q3'::text, '3'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 2.754, 'Q4'::text, '4'::text, 1.5708);
+-- SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.0, 3.672, 'Q5'::text, '5'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 0.0, 'Q6'::text, '6'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 0.918, 'Q7'::text, '7'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 1.836, 'Q8'::text, '8'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 2.754, 'Q9'::text, '9'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 0.612, 3.672, 'Q10'::text, '10'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 0.0, 'Q11'::text, '11'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 0.918, 'Q12'::text, '12'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 1.836, 'Q13'::text, '13'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 2.754, 'Q14'::text, '14'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.216, 3.672, 'Q15'::text, '15'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 0.0, 'Q16'::text, '16'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 0.918, 'Q17'::text, '17'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 1.836, 'Q18'::text, '18'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 2.754, 'Q19'::text, '19'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.836, 3.672, 'Q20'::text, '20'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 0.0, 'Q21'::text, '21'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 0.918, 'Q22'::text, '22'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 1.836, 'Q23'::text, '23'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 2.754, 'Q24'::text, '24'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.448, 3.672, 'Q25'::text, '25'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -1.357, 'Q140'::text, '140'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -2.275, 'Q71'::text, '71'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.114, -2.275, 'Q145'::text, '145'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -2.275, 'Q122'::text, '122'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -3.802, 'Q125'::text, '125'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -4.827, 'Q146'::text, '146'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -6.61, 'Q134'::text, '134'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -2.275, 'Q119'::text, '119'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -4.111, 'Q144'::text, '144'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.766, -4.822, 'Q133'::text, '133'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.741, -3.193, 'Q124'::text, '124'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 7.189, -2.275, 'Q121'::text, '121'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 10.555, -2.275, 'Q108'::text, '108'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 13.0, -2.275, 'Q114'::text, '114'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -3.193, 'Q52'::text, '52'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -4.815, 'Q53'::text, '53'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 4.436, -2.275, 'Q64'::text, '64'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 3.817, -2.275, 'Q139'::text, '139'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.974, -3.193, 'Q63'::text, '63'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 2.596, -2.275, 'Q59'::text, '59'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -2.477, 'Q65'::text, '65'::text, 1.5708);
+SELECT public.wh_create_waypoint(current_setting('wh.graph_id')::bigint, 1.181, -4.111, 'Q58'::text, '58'::text, 1.5708);
 
 -- 5) Create shelves
 SELECT wh_create_shelf(current_setting('wh.graph_id')::bigint, 0.181, -5.168, 'S1C1');

@@ -46,8 +46,8 @@ END $$;
 -- --------------------
 
 GRANT EXECUTE ON FUNCTION public.wh_create_graph(text, text, real) TO app_user;
-GRANT EXECUTE ON FUNCTION public.wh_create_waypoint(bigint, real, real, text, text) TO app_user;
-GRANT EXECUTE ON FUNCTION public.wh_create_conveyor(bigint, real, real, real, text, text) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_create_waypoint(bigint, real, real, text, text, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_create_conveyor(bigint, real, real, real, text, text, real) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_shelf(bigint, real, real, text, text) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_cell(bigint, bigint, bigint, text, text) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_edge(bigint, bigint, bigint) TO app_user;
@@ -63,6 +63,7 @@ GRANT EXECUTE ON FUNCTION public.wh_list_nodes_with_coordinates(bigint) TO app_u
 GRANT EXECUTE ON FUNCTION public.wh_list_edges_with_details(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_graph_summary(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_depot_node_id(bigint) TO app_user, app_readonly;
+GRANT EXECUTE ON FUNCTION public.wh_get_depot_position(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_node_by_alias(bigint, text) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_list_nodes_by_graph(bigint, node_type) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_edges_by_node(bigint) TO app_user, app_readonly;
@@ -72,7 +73,9 @@ GRANT EXECUTE ON FUNCTION public.wh_get_edges_by_node(bigint) TO app_user, app_r
 -- Grant EXECUTE on Update Functions (app_user only)
 -- --------------------
 
-GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, real, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, text, real, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_depot_position(bigint, real, real, real) TO app_user;
 
 
 -- --------------------

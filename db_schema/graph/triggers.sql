@@ -23,8 +23,8 @@ BEGIN
 
   -- OPTIONAL: ensure depot has coordinates row so routing can include it.
   -- Remove this block if you want to force users to set x/y explicitly.
-  INSERT INTO public.wh_depot_nodes (id, x, y)
-  VALUES (v_depot_id, 0::real, 0::real)
+  INSERT INTO public.wh_depot_nodes (id, x, y, yaw)
+  VALUES (v_depot_id, 0::real, 0::real, 0::real)
   ON CONFLICT (id) DO NOTHING;
 
   RETURN NEW;

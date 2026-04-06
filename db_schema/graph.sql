@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS public.wh_depot_nodes (
   id bigint PRIMARY KEY REFERENCES public.wh_nodes(id) ON DELETE CASCADE,
   x real NOT NULL,
   y real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS public.wh_waypoint_nodes (
   id bigint PRIMARY KEY REFERENCES public.wh_nodes(id) ON DELETE CASCADE,
   x real NOT NULL,
   y real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -72,6 +74,7 @@ CREATE TABLE IF NOT EXISTS public.wh_conveyor_nodes (
   x real NOT NULL,
   y real NOT NULL,
   height real NOT NULL,
+  yaw real NOT NULL DEFAULT 0.0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -185,8 +188,8 @@ BEGIN
 
   -- OPTIONAL: ensure depot has coordinates row so routing can include it.
   -- Remove this block if you want to force users to set x/y explicitly.
-  INSERT INTO public.wh_depot_nodes (id, x, y)
-  VALUES (v_depot_id, 0::real, 0::real)
+  INSERT INTO public.wh_depot_nodes (id, x, y, yaw)
+  VALUES (v_depot_id, 0::real, 0::real, 0::real)
   ON CONFLICT (id) DO NOTHING;
 
   RETURN NEW;
@@ -317,6 +320,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     d.x,
     d.y,
+    d.yaw,
     NULL::real AS height,  -- conveyor-specific
     NULL::bigint AS shelf_id,  -- cell-specific
     NULL::bigint AS level_id,  -- cell-specific
@@ -335,6 +339,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     w.x,
     w.y,
+    w.yaw,
     NULL::real AS height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -353,6 +358,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     c.x,
     c.y,
+    c.yaw,
     c.height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -371,6 +377,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     s.x,
     s.y,
+    NULL::real AS yaw,
     NULL::real AS height,
     NULL::bigint AS shelf_id,
     NULL::bigint AS level_id,
@@ -389,6 +396,7 @@ CREATE OR REPLACE VIEW public.wh_nodes_view AS
     n.graph_id,
     s.x,
     s.y,
+    NULL::real AS yaw,
     lv.height AS height,
     cn.shelf_id,
     cn.level_id,
@@ -578,7 +586,8 @@ CREATE OR REPLACE FUNCTION public.wh_create_waypoint(
   p_x        real,
   p_y        real,
   p_alias    text DEFAULT NULL,
-  p_tag_id   text DEFAULT NULL
+  p_tag_id   text DEFAULT NULL,
+  p_yaw      real DEFAULT 0.0
 )
 RETURNS bigint
 LANGUAGE plpgsql
@@ -602,8 +611,8 @@ BEGIN
   RETURNING id INTO v_id;
 
   -- Create subtype row
-  INSERT INTO public.wh_waypoint_nodes (id, x, y)
-  VALUES (v_id, p_x, p_y);
+  INSERT INTO public.wh_waypoint_nodes (id, x, y, yaw)
+  VALUES (v_id, p_x, p_y, p_yaw);
 
   RETURN v_id;
 
@@ -627,7 +636,8 @@ CREATE OR REPLACE FUNCTION public.wh_create_conveyor(
   p_y        real,
   p_height   real,
   p_alias    text DEFAULT NULL,
-  p_tag_id   text DEFAULT NULL
+  p_tag_id   text DEFAULT NULL,
+  p_yaw      real DEFAULT 0.0
 )
 RETURNS bigint
 LANGUAGE plpgsql
@@ -657,8 +667,8 @@ BEGIN
   RETURNING id INTO v_id;
 
   -- Create subtype row
-  INSERT INTO public.wh_conveyor_nodes (id, x, y, height)
-  VALUES (v_id, p_x, p_y, p_height);
+  INSERT INTO public.wh_conveyor_nodes (id, x, y, height, yaw)
+  VALUES (v_id, p_x, p_y, p_height, p_yaw);
 
   RETURN v_id;
 END;
@@ -1070,7 +1080,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.wh_update_node_position(
   p_node_id bigint,
   p_x       real,
-  p_y       real
+  p_y       real,
+  p_yaw     real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -1094,19 +1105,19 @@ BEGIN
   -- Update based on type
   IF v_node_type = 'depot' THEN
     UPDATE public.wh_depot_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
   ELSIF v_node_type = 'waypoint' THEN
     UPDATE public.wh_waypoint_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
   ELSIF v_node_type = 'conveyor' THEN
     UPDATE public.wh_conveyor_nodes
-    SET x = p_x, y = p_y
+    SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
     WHERE id = p_node_id;
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
@@ -1143,12 +1154,13 @@ RETURNS TABLE (
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT id, alias, tag_id, type, x, y, height
+  SELECT id, alias, tag_id, type, x, y, yaw, height
   FROM public.wh_nodes_view
   WHERE graph_id = p_graph_id
     AND alias = p_alias;
@@ -1168,6 +1180,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE plpgsql
@@ -1198,6 +1211,7 @@ BEGIN
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_aliases) WITH ORDINALITY AS input(alias_val, ord)
   JOIN public.wh_nodes_view nv
@@ -1219,12 +1233,13 @@ RETURNS TABLE (
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT id, alias, tag_id, type, x, y, height
+  SELECT id, alias, tag_id, type, x, y, yaw, height
   FROM public.wh_nodes_view
   WHERE graph_id = p_graph_id
     AND tag_id = p_tag_id;
@@ -1265,6 +1280,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE sql
@@ -1277,6 +1293,7 @@ AS $$
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_node_ids) WITH ORDINALITY AS input(node_id, ord)
   JOIN public.wh_nodes_view nv ON nv.id = input.node_id
@@ -1297,6 +1314,7 @@ RETURNS TABLE(
   type node_type,
   x real,
   y real,
+  yaw real,
   height real
 )
 LANGUAGE plpgsql
@@ -1327,6 +1345,7 @@ BEGIN
     nv.type,
     nv.x,
     nv.y,
+    nv.yaw,
     nv.height
   FROM unnest(p_node_ids) WITH ORDINALITY AS input(node_id, ord)
   JOIN public.wh_nodes_view nv ON nv.id = input.node_id
@@ -1934,6 +1953,7 @@ RETURNS TABLE(
   graph_id bigint,
   x real,
   y real,
+  yaw real,
   height real,
   shelf_id bigint,
   level_id bigint,
@@ -1949,6 +1969,7 @@ AS $$
     graph_id,
     x,
     y,
+    yaw,
     height,
     shelf_id,
     level_id,
@@ -2161,7 +2182,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.wh_update_depot_position(
   p_graph_id bigint,
   p_x real,
-  p_y real
+  p_y real,
+  p_yaw real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -2189,18 +2211,18 @@ BEGIN
 
   -- Update depot position
   UPDATE public.wh_depot_nodes
-  SET x = p_x, y = p_y
+  SET x = p_x, y = p_y, yaw = COALESCE(p_yaw, yaw)
   WHERE id = v_depot_id;
 END;
 $$;
 
 -- Get depot position for a graph
 CREATE OR REPLACE FUNCTION public.wh_get_depot_position(p_graph_id bigint)
-RETURNS TABLE(x real, y real)
+RETURNS TABLE(x real, y real, yaw real)
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT d.x, d.y
+  SELECT d.x, d.y, d.yaw
   FROM public.wh_nodes n
   JOIN public.wh_depot_nodes d ON d.id = n.id
   WHERE n.graph_id = p_graph_id
@@ -2262,7 +2284,8 @@ CREATE OR REPLACE FUNCTION public.wh_update_node_position(
   p_graph_id bigint,
   p_alias    text,
   p_x        real,
-  p_y        real
+  p_y        real,
+  p_yaw      real DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -2282,7 +2305,7 @@ BEGIN
       USING ERRCODE = 'foreign_key_violation';
   END IF;
 
-  PERFORM public.wh_update_node_position(v_node_id, p_x, p_y);
+  PERFORM public.wh_update_node_position(v_node_id, p_x, p_y, p_yaw);
 END;
 $$;
 
@@ -2453,8 +2476,8 @@ END $$;
 -- --------------------
 
 GRANT EXECUTE ON FUNCTION public.wh_create_graph(text, text, real) TO app_user;
-GRANT EXECUTE ON FUNCTION public.wh_create_waypoint(bigint, real, real, text, text) TO app_user;
-GRANT EXECUTE ON FUNCTION public.wh_create_conveyor(bigint, real, real, real, text, text) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_create_waypoint(bigint, real, real, text, text, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_create_conveyor(bigint, real, real, real, text, text, real) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_shelf(bigint, real, real, text, text) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_cell(bigint, bigint, bigint, text, text) TO app_user;
 GRANT EXECUTE ON FUNCTION public.wh_create_edge(bigint, bigint, bigint) TO app_user;
@@ -2470,6 +2493,7 @@ GRANT EXECUTE ON FUNCTION public.wh_list_nodes_with_coordinates(bigint) TO app_u
 GRANT EXECUTE ON FUNCTION public.wh_list_edges_with_details(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_graph_summary(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_depot_node_id(bigint) TO app_user, app_readonly;
+GRANT EXECUTE ON FUNCTION public.wh_get_depot_position(bigint) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_node_by_alias(bigint, text) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_list_nodes_by_graph(bigint, node_type) TO app_user, app_readonly;
 GRANT EXECUTE ON FUNCTION public.wh_get_edges_by_node(bigint) TO app_user, app_readonly;
@@ -2479,7 +2503,9 @@ GRANT EXECUTE ON FUNCTION public.wh_get_edges_by_node(bigint) TO app_user, app_r
 -- Grant EXECUTE on Update Functions (app_user only)
 -- --------------------
 
-GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, real, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_node_position(bigint, text, real, real, real) TO app_user;
+GRANT EXECUTE ON FUNCTION public.wh_update_depot_position(bigint, real, real, real) TO app_user;
 
 
 -- --------------------
