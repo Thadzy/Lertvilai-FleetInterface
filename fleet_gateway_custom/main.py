@@ -329,6 +329,45 @@ def _parse_robot_state(name: str, raw: Optional[str], heartbeat: Optional[str]) 
 
     autorun = bool(data.get("autorun", False))
 
+    # --- Current Job & Queue ---
+    current_job = None
+    job_queue = []
+
+    raw_job = data.get("currentJob")
+    if isinstance(raw_job, dict):
+        target_node = None
+        raw_node = raw_job.get("targetNode")
+        if isinstance(raw_node, dict):
+            target_node = Node(
+                id=raw_node.get("id", 0),
+                alias=raw_node.get("alias"),
+                x=raw_node.get("x", 0.0),
+                y=raw_node.get("y", 0.0)
+            )
+        
+        current_job = Job(
+            uuid=raw_job.get("uuid", "unknown"),
+            status=OrderStatus(raw_job.get("status", "QUEUED")),
+            operation=JobOperation(raw_job.get("operation", "TRAVEL")),
+            target_node=target_node
+        )
+
+    raw_queue = data.get("jobQueue")
+    if isinstance(raw_queue, list):
+        for idx, item in enumerate(raw_queue):
+            if isinstance(item, dict):
+                job_queue.append(Job(
+                    uuid=f"queued-{idx}",
+                    status=OrderStatus.QUEUED,
+                    operation=JobOperation.TRAVEL,
+                    target_node=Node(
+                        id=item.get("id", 0),
+                        alias=item.get("alias"),
+                        x=item.get("x", 0.0),
+                        y=item.get("y", 0.0)
+                    )
+                ))
+
     return Robot(
         name=name,
         connection_status=conn_status,
@@ -336,6 +375,8 @@ def _parse_robot_state(name: str, raw: Optional[str], heartbeat: Optional[str]) 
         mobile_base_state=mobile_base_state,
         piggyback_state=piggyback,
         autorun=autorun,
+        current_job=current_job,
+        job_queue=job_queue,
     )
 
 

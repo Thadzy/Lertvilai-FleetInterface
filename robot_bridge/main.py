@@ -58,6 +58,8 @@ robot_state = {
     },
     "piggybackState": False,
     "autorun": False,
+    "currentJob": None,
+    "jobQueue": [],
 }
 last_odom_at = 0.0
 _redis_client: redis_async.Redis | None = None
@@ -247,11 +249,28 @@ async def _execute_path_waypoints(
     total: int = len(waypoints)
     log.info(f"[Path] Starting execution of {total} waypoint(s).")
 
+    # Update job queue in state
+    robot_state["jobQueue"] = waypoints[:]
+    await push_to_redis()
+
     for idx, waypoint in enumerate(waypoints, start=1):
         alias: str = str(waypoint.get("alias") or "")
         target_x: float = _safe_float(waypoint.get("x"), 0.0)
         target_y: float = _safe_float(waypoint.get("y"), 0.0)
         target_th: float = _safe_float(waypoint.get("yaw"), 0.0)
+
+        # Update current job
+        robot_state["currentJob"] = {
+            "uuid": f"job-{idx}",
+            "operation": "TRAVEL",
+            "status": "IN_PROGRESS",
+            "targetNode": {"alias": alias, "x": target_x, "y": target_y}
+        }
+        # Remove from queue
+        if robot_state["jobQueue"]:
+            robot_state["jobQueue"].pop(0)
+        
+        await push_to_redis()
 
         # --- Publish this waypoint ---
         await _publish_travel(ws, alias, target_x, target_y, target_th)
@@ -279,6 +298,7 @@ async def _execute_path_waypoints(
                     f"after {WAYPOINT_TIMEOUT}s. Aborting path."
                 )
                 robot_state["lastActionStatus"] = "ERROR"
+                robot_state["currentJob"]["status"] = "ERROR"
                 await push_to_redis()
                 return  # Abort: leave recovery to operator / higher-level planner
 
@@ -287,6 +307,8 @@ async def _execute_path_waypoints(
     # All waypoints reached successfully
     log.info("[Path] All waypoints reached. Path execution complete.")
     robot_state["lastActionStatus"] = "IDLE"
+    robot_state["currentJob"] = None
+    robot_state["jobQueue"] = []
     await push_to_redis()
 
 
