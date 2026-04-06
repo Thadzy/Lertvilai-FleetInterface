@@ -868,7 +868,7 @@ const FleetController: React.FC<FleetControllerProps> = ({ graphId, simulationRo
         simPausedRef.current = true;
         cancelAllDispatches();
       }
-      publishCommand(robotId, command as "PAUSE" | "RESUME" | "ESTOP" | "CANCEL", { robotName });
+      publishCommand(robotId, command as "PAUSE" | "RESUME" | "ESTOP" | "CANCEL" | "GOTO", { robotName });
     },
     [publishCommand],
   );

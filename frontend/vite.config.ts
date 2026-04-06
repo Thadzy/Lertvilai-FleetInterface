@@ -46,7 +46,7 @@ export default defineConfig(({ mode }) => {
       },
     }
   },
-  // @ts-expect-error - vitest types are not automatically detected in some environments
+  // vitest types are not automatically detected in some environments
   test: {
     environment: 'jsdom',
     globals: true,
