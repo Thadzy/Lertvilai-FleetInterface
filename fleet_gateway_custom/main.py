@@ -45,11 +45,13 @@ from vrp_client import (
 )
 from route_oracle import log_vehicle_routes
 from route_oracle import expand_path_with_coords
+from route_oracle import _batch_resolve_nodes_with_coords as resolve_nodes
 
 # ── Config ────────────────────────────────────────────────────────────────────
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 ROBOTS_CONFIG: dict = json.loads(os.getenv("ROBOTS_CONFIG", "{}"))
+DEFAULT_GRAPH_ID = int(os.getenv("GRAPH_ID", "1"))
 log = logging.getLogger(__name__)
 ACTION_SYNC_TIMEOUT_S = float(os.getenv("ACTION_SYNC_TIMEOUT_S", "300"))
 ACTION_SYNC_POLL_S = 1.0
@@ -612,18 +614,37 @@ class Mutation:
 
     @strawberry.mutation
     async def send_travel_order(self, order: TravelOrderInput) -> JobOrderResult:
-        """Dispatch a travel order to the target robot via Redis pub/sub.
+        """Dispatch a travel order with resolved coordinates from DB."""
+        target_x = order.target_x
+        target_y = order.target_y
+        target_yaw = 0.0
+        
+        # If coordinates are missing, resolve them from DB using alias or ID
+        if target_x is None or target_y is None:
+            try:
+                async with httpx.AsyncClient() as client:
+                    # Determine node ID to lookup
+                    node_id = order.target_node_id
+                    if not node_id and order.target_node_alias:
+                        # Find ID by alias
+                        resp = await client.get(
+                            f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes",
+                            params={"alias": f"eq.{order.target_node_alias}", "select": "id"},
+                            headers={"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"}
+                        )
+                        if resp.status_code == 200 and resp.json():
+                            node_id = resp.json()[0]["id"]
+                    
+                    if node_id:
+                        node_map = await resolve_nodes(client, DEFAULT_GRAPH_ID, {int(node_id)})
+                        node_data = node_map.get(int(node_id))
+                        if node_data:
+                            target_x = node_data["x"]
+                            target_y = node_data["y"]
+                            target_yaw = node_data.get("yaw", 0.0)
+            except Exception as exc:
+                log.error(f"Failed to resolve coordinates for travel: {exc}")
 
-        Publishes a JSON command to ``robot:{robot_name}:command`` so that
-        robot_bridge (or any subscriber) can forward it to the physical robot
-        over the rosbridge WebSocket.
-
-        Args:
-            order: Travel order input containing robot name and target node.
-
-        Returns:
-            JobOrderResult indicating success or failure.
-        """
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
             "op": "travel",
@@ -631,8 +652,9 @@ class Mutation:
             "msg": {
                 "target_alias": order.target_node_alias,
                 "target_node_id": order.target_node_id,
-                "target_x": order.target_x,
-                "target_y": order.target_y,
+                "target_x": target_x or 0.0,
+                "target_y": target_y or 0.0,
+                "target_th": target_yaw,
             },
         })
         try:
@@ -642,12 +664,12 @@ class Mutation:
             )
             return JobOrderResult(
                 success=True,
-                message=f"Travel order dispatched to {order.robot_name}",
+                message=f"Travel order to {order.target_node_alias} ({target_x}, {target_y}) dispatched to {order.robot_name}",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return JobOrderResult(
                 success=False,
-                message=f"Redis error dispatching travel to {order.robot_name}: {exc}",
+                message=f"Redis error: {exc}",
             )
 
     @strawberry.mutation
