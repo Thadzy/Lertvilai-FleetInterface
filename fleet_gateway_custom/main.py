@@ -591,18 +591,7 @@ class Mutation:
         )
     @strawberry.mutation
     async def send_pickup_order(self, order: PickupOrderInput) -> JobOrderResult:
-        """Dispatch a pickup order to the target robot via Redis pub/sub.
-
-        Publishes a JSON command to ``robot:{robot_name}:command`` so that
-        robot_bridge (or any subscriber) can forward it to the physical robot
-        over the rosbridge WebSocket.
-
-        Args:
-            order: Pickup order input containing robot name and target node.
-
-        Returns:
-            JobOrderResult indicating success or failure.
-        """
+        """Dispatch a pickup order with alias and coordinates support."""
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
             "op": "pickup",
@@ -613,34 +602,14 @@ class Mutation:
             },
         })
         try:
-            await with_redis(
-                f"publish:{channel}",
-                lambda r: r.publish(channel, command),
-            )
-            return JobOrderResult(
-                success=True,
-                message=f"Pickup order dispatched to {order.robot_name}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            return JobOrderResult(
-                success=False,
-                message=f"Redis error dispatching pickup to {order.robot_name}: {exc}",
-            )
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, command))
+            return JobOrderResult(success=True, message=f"Pickup order to {order.target_node_alias} dispatched.")
+        except Exception as exc:
+            return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def send_delivery_order(self, order: DeliveryOrderInput) -> JobOrderResult:
-        """Dispatch a delivery order to the target robot via Redis pub/sub.
-
-        Publishes a JSON command to ``robot:{robot_name}:command`` so that
-        robot_bridge (or any subscriber) can forward it to the physical robot
-        over the rosbridge WebSocket.
-
-        Args:
-            order: Delivery order input containing robot name, cell level, and target node.
-
-        Returns:
-            JobOrderResult indicating success or failure.
-        """
+        """Dispatch a delivery order with alias and level support."""
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
             "op": "delivery",
@@ -652,19 +621,10 @@ class Mutation:
             },
         })
         try:
-            await with_redis(
-                f"publish:{channel}",
-                lambda r: r.publish(channel, command),
-            )
-            return JobOrderResult(
-                success=True,
-                message=f"Delivery order dispatched to {order.robot_name}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            return JobOrderResult(
-                success=False,
-                message=f"Redis error dispatching delivery to {order.robot_name}: {exc}",
-            )
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, command))
+            return JobOrderResult(success=True, message=f"Delivery order to {order.target_node_alias} dispatched.")
+        except Exception as exc:
+            return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def send_travel_order(self, order: TravelOrderInput) -> JobOrderResult:

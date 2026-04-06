@@ -369,6 +369,24 @@ async def _command_relay(ws):
                 await _publish_travel(ws, target_alias, target_x, target_y, target_th)
                 continue
 
+            # ── Pickup / Delivery / Request ────────────────────────────────────
+            if op in {"pickup", "delivery", "request"}:
+                msg_payload = cmd.get("msg", {})
+                topic = cmd.get("topic", f"/{op}_command")
+                
+                # Forward the entire message payload to ROS2 as a JSON string
+                ros_payload = json.dumps({
+                    "op": "publish",
+                    "topic": topic,
+                    "type": "std_msgs/msg/String",
+                    "msg": {
+                        "data": json.dumps(msg_payload)
+                    }
+                })
+                log.info(f"→ ROS2 {topic} | op={op} | payload: {json.dumps(msg_payload)}")
+                await ws.send(ros_payload)
+                continue
+
             # ── Multi-waypoint path execution (closed-loop) ───────────────────
             if op == "execute_path":
                 waypoints: list[dict] = cmd.get("waypoints", [])
