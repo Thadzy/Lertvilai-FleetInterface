@@ -311,6 +311,7 @@ services:
       - "80:80"
     environment:
       FLEET_GATEWAY_URL: http://fleet_gateway:8000
+      VRP_URL: http://vrp_server:18080
     depends_on:
       - fleet_gateway
       - kong
