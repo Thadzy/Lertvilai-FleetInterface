@@ -282,6 +282,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${ANON_KEY}
+    ports:
+      - "80:80"
+    environment:
+      FLEET_GATEWAY_URL: http://fleet_gateway:8000
+    depends_on:
+      - fleet_gateway
+      - kong
+    restart: unless-stopped
+
 volumes:
   db_data:
   redis_data:

@@ -44,10 +44,23 @@ JWT_TOKENS=$(python3 -c "$GENERATE_JWTS_PY" "$JWT_SECRET")
 ANON_KEY=$(echo "$JWT_TOKENS" | sed -n '1p')
 SERVICE_ROLE_KEY=$(echo "$JWT_TOKENS" | sed -n '2p')
 
+# Detect Local IP (works on macOS and Linux)
+LOCAL_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+if [ -z "$LOCAL_IP" ]; then
+  LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null) # macOS en0
+fi
+if [ -z "$LOCAL_IP" ]; then
+  LOCAL_IP=$(hostname -I | awk '{print $1}' 2>/dev/null) # Linux general
+fi
+LOCAL_IP="${LOCAL_IP:-127.0.0.1}"
+
+echo "Detected Local IP: ${LOCAL_IP}"
+
 # Helper: replace value of KEY=... in .env (handles special chars via | delimiter)
 replace_env() {
   local key="$1"
   local value="$2"
+  # Use | as delimiter to handle slashes in URLs
   sed -i.bak "s|^${key}=.*|${key}=${value}|" .env
 }
 
@@ -57,37 +70,44 @@ replace_env PG_META_CRYPTO_KEY     "$PG_META_CRYPTO_KEY"
 replace_env DASHBOARD_PASSWORD     "$DASHBOARD_PASSWORD"
 replace_env ANON_KEY               "$ANON_KEY"
 replace_env SERVICE_ROLE_KEY       "$SERVICE_ROLE_KEY"
-# Keep frontend vars in sync — Vite reads envDir from root .env (no frontend/.env.local needed)
+
+# Networking Configuration for LAN Access
+replace_env SUPABASE_PUBLIC_URL    "http://${LOCAL_IP}:8000"
+replace_env VITE_SUPABASE_URL      "http://${LOCAL_IP}:8000"
 replace_env VITE_SUPABASE_ANON_KEY "$ANON_KEY"
 
 # Robot type selection
 echo "Select robot type:"
 echo "  1) SIMBOT    (simulator, default)"
-echo "  2) FACOBOT   (external robot)"
-echo "  3) LOCALBOT  (local robot via host.docker.internal)"
+echo "  2) FACOBOT   (external robot at 10.61.6.87)"
+echo "  3) CUSTOM    (enter IP manually)"
 read -rp "Enter choice [1/2/3]: " robot_choice
 
 case "$robot_choice" in
   2)
-    read -rp "Enter FACOBOT host IP [10.61.6.65]: " facobot_host
-    facobot_host="${facobot_host:-10.61.6.65}"
+    facobot_host="10.61.6.87"
     ROBOTS_CONFIG="{\"FACOBOT\": {\"host\": \"${facobot_host}\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
     replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
     replace_env ROBOT_NAME "FACOBOT"
+    replace_env ROBOT_HOST "${facobot_host}"
     sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
-    echo "Robot: FACOBOT (${facobot_host}) — robot_simulator commented out in docker-compose.yml"
+    echo "Robot: FACOBOT (${facobot_host})"
     ;;
   3)
-    ROBOTS_CONFIG='{"LOCALBOT": {"host": "host.docker.internal", "port": 9090, "cell_heights": [0.653, 1.073, 1.493, 1.913]}}'
+    read -rp "Enter Robot host IP [${LOCAL_IP}]: " custom_host
+    custom_host="${custom_host:-$LOCAL_IP}"
+    ROBOTS_CONFIG="{\"CUSTOM_ROBOT\": {\"host\": \"${custom_host}\", \"port\": 9090, \"cell_heights\": [0.653, 1.073, 1.493, 1.913]}}"
     replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
-    replace_env ROBOT_NAME "LOCALBOT"
+    replace_env ROBOT_NAME "CUSTOM_ROBOT"
+    replace_env ROBOT_HOST "${custom_host}"
     sed -i.bak '/^  robot_simulator:/,/port:=9090/s/^/# /' docker-compose.yml && rm -f docker-compose.yml.bak
-    echo "Robot: LOCALBOT (host.docker.internal) — robot_simulator commented out in docker-compose.yml"
+    echo "Robot: CUSTOM_ROBOT (${custom_host})"
     ;;
   *)
     ROBOTS_CONFIG='{"SIMBOT": {"host": "robot_simulator", "port": 9090, "cell_heights": [0.653, 1.073, 1.493, 1.913]}}'
     replace_env ROBOTS_CONFIG "'${ROBOTS_CONFIG}'"
     replace_env ROBOT_NAME "SIMBOT"
+    replace_env ROBOT_HOST "robot_simulator"
     echo "Robot: SIMBOT (simulator)"
     ;;
 esac
