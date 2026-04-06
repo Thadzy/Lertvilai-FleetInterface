@@ -18,12 +18,12 @@
 import React, { useEffect, useState, useCallback, useMemo, memo, useRef } from "react";
 import {
   useReactFlow,
-  type Node,
-  type Edge,
   Panel,
-  type NodeProps,
   Handle,
   Position,
+  type Node,
+  type Edge,
+  type NodeProps,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import WarehouseGraph, { type WarehouseGraphOnLoadPayload } from "./WarehouseGraph";
