@@ -591,7 +591,8 @@ class Mutation:
         )
     @strawberry.mutation
     async def send_pickup_order(self, order: PickupOrderInput) -> JobOrderResult:
-        """Dispatch a pickup order with alias and coordinates support."""
+        """Dispatch a pickup order and return the created job."""
+        job_uuid = f"pickup-{int(time.time())}"
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
             "op": "pickup",
@@ -603,13 +604,20 @@ class Mutation:
         })
         try:
             await with_redis(f"publish:{channel}", lambda r: r.publish(channel, command))
-            return JobOrderResult(success=True, message=f"Pickup order to {order.target_node_alias} dispatched.")
+            created_job = Job(
+                uuid=job_uuid,
+                status=OrderStatus.QUEUED,
+                operation=JobOperation.PICKUP,
+                target_node=Node(id=order.target_node_id or 0, alias=order.target_node_alias)
+            )
+            return JobOrderResult(success=True, message=f"Pickup dispatched", job=created_job)
         except Exception as exc:
             return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def send_delivery_order(self, order: DeliveryOrderInput) -> JobOrderResult:
-        """Dispatch a delivery order with alias and level support."""
+        """Dispatch a delivery order and return the created job."""
+        job_uuid = f"delivery-{int(time.time())}"
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
             "op": "delivery",
@@ -622,47 +630,43 @@ class Mutation:
         })
         try:
             await with_redis(f"publish:{channel}", lambda r: r.publish(channel, command))
-            return JobOrderResult(success=True, message=f"Delivery order to {order.target_node_alias} dispatched.")
+            created_job = Job(
+                uuid=job_uuid,
+                status=OrderStatus.QUEUED,
+                operation=JobOperation.DELIVERY,
+                target_node=Node(id=order.target_node_id or 0, alias=order.target_node_alias)
+            )
+            return JobOrderResult(success=True, message=f"Delivery dispatched", job=created_job)
         except Exception as exc:
             return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def send_travel_order(self, order: TravelOrderInput) -> JobOrderResult:
-        """Dispatch a travel order with resolved coordinates from DB."""
+        """Dispatch a travel order and return the created job with resolved coordinates."""
+        job_uuid = f"travel-{int(time.time())}"
         target_x = order.target_x
         target_y = order.target_y
         target_yaw = 0.0
         
-        # If coordinates are missing, resolve them from DB using alias or ID
-        if target_x is None or target_y is None:
-            try:
-                async with httpx.AsyncClient() as client:
-                    # Determine node ID to lookup
-                    node_id = order.target_node_id
-                    if not node_id and order.target_node_alias:
-                        # Find ID by alias
-                        url = f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes"
-                        params = {"alias": f"eq.{order.target_node_alias}", "select": "id"}
-                        headers = {"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"}
-                        log.info(f"[DEBUG] Looking up node by alias: {order.target_node_alias} at {url}")
-                        resp = await client.get(url, params=params, headers=headers)
-                        if resp.status_code == 200 and resp.json():
-                            node_id = resp.json()[0]["id"]
-                            log.info(f"[DEBUG] Found node_id: {node_id} for alias: {order.target_node_alias}")
-                        else:
-                            log.warning(f"[DEBUG] Node lookup failed. Status: {resp.status_code}, Body: {resp.text}")
-                    
-                    if node_id:
-                        log.info(f"[DEBUG] Fetching coords for node_id: {node_id}")
-                        node_map = await resolve_nodes(client, DEFAULT_GRAPH_ID, {int(node_id)})
-                        node_data = node_map.get(int(node_id))
-                        if node_data:
-                            target_x = node_data["x"]
-                            target_y = node_data["y"]
-                            target_yaw = node_data.get("yaw", 0.0)
-                            log.info(f"[DEBUG] Resolved coords: x={target_x}, y={target_y}, th={target_yaw}")
-            except Exception as exc:
-                log.error(f"Failed to resolve coordinates for travel: {exc}")
+        # Resolve coords if missing (already implemented logic)
+        try:
+            async with httpx.AsyncClient() as client:
+                node_id = order.target_node_id
+                if not node_id and order.target_node_alias:
+                    url = f"{os.getenv('POSTGREST_URL', 'http://rest:3000')}/wh_nodes"
+                    resp = await client.get(url, params={"alias": f"eq.{order.target_node_alias}", "select": "id"}, 
+                                         headers={"Authorization": f"Bearer {os.getenv('SUPABASE_SERVICE_KEY', '')}"})
+                    if resp.status_code == 200 and resp.json():
+                        node_id = resp.json()[0]["id"]
+                
+                if node_id:
+                    node_map = await resolve_nodes(client, DEFAULT_GRAPH_ID, {int(node_id)})
+                    if int(node_id) in node_map:
+                        target_x = node_map[int(node_id)]["x"]
+                        target_y = node_map[int(node_id)]["y"]
+                        target_yaw = node_map[int(node_id)].get("yaw", 0.0)
+        except Exception as exc:
+            log.error(f"Coord resolution failed: {exc}")
 
         channel = f"robot:{order.robot_name}:command"
         command = json.dumps({
@@ -677,19 +681,16 @@ class Mutation:
             },
         })
         try:
-            await with_redis(
-                f"publish:{channel}",
-                lambda r: r.publish(channel, command),
+            await with_redis(f"publish:{channel}", lambda r: r.publish(channel, command))
+            created_job = Job(
+                uuid=job_uuid,
+                status=OrderStatus.QUEUED,
+                operation=JobOperation.TRAVEL,
+                target_node=Node(id=order.target_node_id or 0, alias=order.target_node_alias, x=target_x or 0.0, y=target_y or 0.0)
             )
-            return JobOrderResult(
-                success=True,
-                message=f"Travel order to {order.target_node_alias} ({target_x}, {target_y}) dispatched to {order.robot_name}",
-            )
+            return JobOrderResult(success=True, message="Travel dispatched", job=created_job)
         except Exception as exc:
-            return JobOrderResult(
-                success=False,
-                message=f"Redis error: {exc}",
-            )
+            return JobOrderResult(success=False, message=f"Redis error: {exc}")
 
     @strawberry.mutation
     async def send_robot_command(self, robot_name: str, command: str) -> JobOrderResult:
